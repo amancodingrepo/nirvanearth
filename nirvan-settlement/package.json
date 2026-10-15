@@ -8,6 +8,9 @@
     "apps/*"
   ],
   "scripts": {
+    "build": "npm run db:generate -w @nirvan/api",
+    "start": "npm run start:prod -w @nirvan/api",
+    "start:dev": "npm run dev -w @nirvan/api",
     "dev": "npm run dev -w @nirvan/api",
     "test": "npm run test -w @nirvan/rules && npm run test -w @nirvan/api",
     "db:push": "npm run db:push -w @nirvan/api",
