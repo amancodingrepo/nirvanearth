@@ -6,12 +6,6 @@ import { fetchPaidOrders } from "../src/shopify.ts";
 
 loadEnvFiles();
 
-const token = process.env.SHOPIFY_ADMIN_TOKEN ?? "";
-if (!token || token.startsWith("paste_")) {
-  console.error("SHOPIFY_ADMIN_TOKEN is still a placeholder. Paste the Admin API token into .env, then run this script again.");
-  process.exit(1);
-}
-
 const limitArg = process.argv.find((arg) => arg.startsWith("--limit="));
 const daysArg = process.argv.find((arg) => arg.startsWith("--days="));
 const limit = limitArg ? Number(limitArg.slice("--limit=".length)) : 1;
@@ -23,7 +17,14 @@ if (!Number.isInteger(limit) || limit < 1) {
 
 const config = loadConfig();
 const db = getDb(config.databaseUrl);
-const orders = await fetchPaidOrders(config, { limit, days });
+let orders;
+try {
+  orders = await fetchPaidOrders(config, { limit, days }, db);
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  await db.$disconnect();
+  process.exit(1);
+}
 if (orders.length === 0) {
   console.log("orders upserted=0 lines upserted=0");
   console.log("Shopify returned no paid orders.");

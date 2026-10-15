@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import cookie from "@fastify/cookie";
@@ -12,7 +13,13 @@ import { createMailer, type Mailer } from "./mailer.ts";
 import { approvePack, generateMonthPack, getPack, submitPack } from "./pack.ts";
 import { executePack } from "./execute.ts";
 import { presentLine, presentPack } from "./serialize.ts";
-import { fetchPaidOrders } from "./shopify.ts";
+import {
+  exchangeShopifyCode,
+  fetchPaidOrders,
+  getShopifyAccessToken,
+  isValidShopifyDomain,
+  verifyShopifyHmac,
+} from "./shopify.ts";
 import { createStripeGateway, pingStripe } from "./stripe.ts";
 import type { TransferGateway } from "./types.ts";
 
@@ -59,15 +66,101 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       };
     }
 
+    let shopifyStatus: { connected: boolean; shop: string; mode: string };
+    try {
+      const token = await getShopifyAccessToken(config, db);
+      shopifyStatus = { connected: Boolean(token), shop: config.shopifyShop, mode: "active" };
+    } catch {
+      shopifyStatus = { connected: false, shop: config.shopifyShop, mode: "needs_auth" };
+    }
+
     return {
       ok: dbOk && stripe.ok,
       db: { ok: dbOk, error: dbError },
       stripe,
+      shopify: shopifyStatus,
       mode: gateway.mode,
       shop: config.shopifyShop,
       liveBlocked: !config.allowLive,
     };
   });
+
+  const handleShopifyAuth = async (request: FastifyRequest, reply: FastifyReply) => {
+    const query = (request.query ?? {}) as { shop?: string };
+    const shop = (query.shop ?? config.shopifyShop).toLowerCase().trim();
+    if (!isValidShopifyDomain(shop)) {
+      throw new HttpError(400, "Invalid shop domain. Must end with .myshopify.com");
+    }
+    if (!config.shopifyApiKey) {
+      throw new HttpError(500, "SHOPIFY_API_KEY is not configured in environment variables.");
+    }
+    const state = randomBytes(16).toString("hex");
+    reply.setCookie("shopify_oauth_state", state, {
+      path: "/",
+      httpOnly: true,
+      sameSite: "lax",
+      maxAge: 600,
+    });
+    const redirectUri = `${config.appUrl.replace(/\/+$/, "")}/shopify/callback`;
+    const authUrl = `https://${shop}/admin/oauth/authorize?client_id=${encodeURIComponent(
+      config.shopifyApiKey,
+    )}&scope=${encodeURIComponent(config.shopifyScopes)}&redirect_uri=${encodeURIComponent(
+      redirectUri,
+    )}&state=${encodeURIComponent(state)}`;
+    return reply.redirect(authUrl);
+  };
+
+  app.get("/shopify/auth", handleShopifyAuth);
+  app.get("/api/shopify/auth", handleShopifyAuth);
+
+  const handleShopifyCallback = async (request: FastifyRequest, reply: FastifyReply) => {
+    const query = (request.query ?? {}) as Record<string, string | undefined>;
+    const { code, shop, state, hmac } = query;
+    if (!shop || !isValidShopifyDomain(shop)) {
+      throw new HttpError(400, "Invalid or missing shop domain. Must end with .myshopify.com");
+    }
+    if (!code) {
+      throw new HttpError(400, "Missing authorization code from Shopify.");
+    }
+    const expectedState = request.cookies?.shopify_oauth_state;
+    if (!state || !expectedState || state !== expectedState) {
+      throw new HttpError(403, "Invalid or expired OAuth state parameter.");
+    }
+    if (hmac && config.shopifyApiSecret) {
+      const isValidHmac = verifyShopifyHmac(query, config.shopifyApiSecret);
+      if (!isValidHmac) {
+        throw new HttpError(403, "HMAC validation failed.");
+      }
+    }
+
+    const { accessToken, scope } = await exchangeShopifyCode(shop, code, config);
+    await db.shopSession.upsert({
+      where: { shop: shop.toLowerCase().trim() },
+      create: {
+        shop: shop.toLowerCase().trim(),
+        accessToken,
+        scope: scope || config.shopifyScopes,
+      },
+      update: {
+        accessToken,
+        scope: scope || config.shopifyScopes,
+      },
+    });
+
+    await db.auditEvent.create({
+      data: {
+        action: "shopify_oauth_connected",
+        actorEmail: "shopify_oauth",
+        payloadJson: { shop: shop.toLowerCase().trim(), scope: scope || config.shopifyScopes },
+      },
+    });
+
+    reply.clearCookie("shopify_oauth_state", { path: "/" });
+    return reply.redirect("/?shopify=connected");
+  };
+
+  app.get("/shopify/callback", handleShopifyCallback);
+  app.get("/api/shopify/callback", handleShopifyCallback);
 
   app.post("/api/auth/login", async (request, reply) => {
     const body = request.body as { email?: string; password?: string };
@@ -128,7 +221,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   });
 
   async function syncPaidOrders(actor: string, days?: number) {
-    const orders = await fetchPaidOrders(config, { limit: 50, days });
+    const orders = await fetchPaidOrders(config, { limit: 50, days }, db);
     let linesUpserted = 0;
     for (const order of orders) {
       const result = await ingestShopifyOrder(db, config, order, actor);

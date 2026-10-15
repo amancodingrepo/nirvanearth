@@ -4,7 +4,10 @@ export interface AppConfig {
   nodeEnv: string;
   databaseUrl: string;
   shopifyShop: string;
+  shopifyApiKey: string;
+  shopifyApiSecret: string;
   shopifyToken: string;
+  shopifyScopes: string;
   stripeSecretKey: string;
   stripePublishableKey: string;
   approverEmails: string[];
@@ -58,7 +61,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     nodeEnv,
     databaseUrl,
     shopifyShop: env.SHOPIFY_SHOP ?? "t91jg6-qq.myshopify.com",
+    shopifyApiKey: env.SHOPIFY_API_KEY ?? env.SHOPIFY_CLIENT_ID ?? "",
+    shopifyApiSecret: env.SHOPIFY_API_SECRET ?? env.SHOPIFY_CLIENT_SECRET ?? "",
     shopifyToken: env.SHOPIFY_ADMIN_TOKEN ?? env.SHOPIFY_ADMIN_ACCESS_TOKEN ?? "",
+    shopifyScopes:
+      env.SCOPES ??
+      env.SHOPIFY_SCOPES ??
+      "read_orders,read_products,read_fulfillments,read_merchant_managed_fulfillment_orders",
     stripeSecretKey,
     stripePublishableKey: env.STRIPE_PUBLISHABLE_KEY ?? "",
     approverEmails: splitList(env.APPROVER_EMAILS ?? "admin@nirvanearth.com").map((email) => email.toLowerCase()),

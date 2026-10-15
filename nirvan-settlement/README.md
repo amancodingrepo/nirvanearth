@@ -19,6 +19,27 @@ npm run dev
 
 Ledger: http://localhost:3000
 
+## Shopify OAuth Setup
+
+1. In the **Shopify Dev / Partner Dashboard** (for app *Nirvan Settlement Sync*):
+   - **App URL**: `https://nirvanearth-production.up.railway.app`
+   - **Allowed redirection URL(s)**:
+     `https://nirvanearth-production.up.railway.app/shopify/callback`
+     *(For local development, also add: `http://localhost:3000/shopify/callback`)*
+   - **Scopes**: `read_orders,read_products,read_fulfillments,read_merchant_managed_fulfillment_orders`
+2. Add your **Client ID** and **Client Secret** into the environment:
+   ```env
+   SHOPIFY_SHOP=t91jg6-qq.myshopify.com
+   SHOPIFY_API_KEY=your_client_id
+   SHOPIFY_API_SECRET=your_client_secret
+   APP_URL=https://nirvanearth-production.up.railway.app
+   ```
+3. Authorize once:
+   - Visit `https://nirvanearth-production.up.railway.app/shopify/auth` (or `http://localhost:3000/shopify/auth`).
+   - Log in and grant permissions.
+   - Upon redirect to `/shopify/callback`, the app exchanges the temporary authorization code for an offline access token and saves it securely in the database (`shop_sessions` table).
+   - Once connected, order sync and product tag queries automatically authenticate via `X-Shopify-Access-Token`.
+
 | Manual command | npm |
 |----------------|-----|
 | `node scripts/stripe-ping.js` | same, from the repo root |
