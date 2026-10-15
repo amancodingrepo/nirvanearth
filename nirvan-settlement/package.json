@@ -1,0 +1,28 @@
+{
+  "name": "nirvan-settlement",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Nirvan Earth marketplace settlement (test mode). Shopify + Webkul + Stripe Connect.",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w @nirvan/api",
+    "test": "npm run test -w @nirvan/rules && npm run test -w @nirvan/api",
+    "db:push": "npm run db:push -w @nirvan/api",
+    "db:push:test": "npm run db:push:test -w @nirvan/api",
+    "db:generate": "npm run db:generate -w @nirvan/api",
+    "seed": "npm run seed -w @nirvan/api",
+    "seed:demo": "npm run seed:demo -w @nirvan/api",
+    "stripe:ping": "npm run stripe:ping -w @nirvan/api",
+    "sync": "npm run sync -w @nirvan/api --",
+    "sync:orders": "npm run sync:orders -w @nirvan/api --",
+    "enrich": "npm run enrich -w @nirvan/api",
+    "pack": "npm run pack -w @nirvan/api --",
+    "execute": "npm run execute -w @nirvan/api --"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

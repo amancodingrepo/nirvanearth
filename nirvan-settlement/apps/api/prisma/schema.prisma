@@ -1,0 +1,186 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model AdminUser {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("admin_users")
+}
+
+model Vendor {
+  id                String   @id @default(cuid())
+  name              String
+  email             String?
+  vatRegistered     Boolean  @default(false) @map("vat_registered")
+  tradeLicenceRef   String?  @map("trade_licence_ref")
+  webkulSellerId    String?  @unique @map("webkul_seller_id")
+  externalKey       String?  @unique @map("external_key")
+  stripeAccountId   String?  @map("stripe_account_id")
+  active            Boolean  @default(true)
+  createdAt         DateTime @default(now()) @map("created_at")
+  lines             OrderLine[]
+  settlementLines   SettlementLine[]
+
+  @@map("vendors")
+}
+
+model OrderSnapshot {
+  id                 String    @id @default(cuid())
+  shopifyOrderId     String    @unique @map("shopify_order_id")
+  orderNumber        String    @map("order_number")
+  currency           String
+  paidAt             DateTime? @map("paid_at")
+  financialStatus    String?   @map("financial_status")
+  fulfillmentStatus  String?   @map("fulfillment_status")
+  gateway            String?
+  taxesIncluded      Boolean   @default(false) @map("taxes_included")
+  shippingTotal      Decimal   @default(0) @map("shipping_total") @db.Decimal(12, 2)
+  shippingAllocation String    @default("unassigned") @map("shipping_allocation")
+  rawJson            Json      @map("raw_json")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  lines              OrderLine[]
+  adjustments        Adjustment[]
+
+  @@map("order_snapshots")
+}
+
+model OrderLine {
+  id                   String    @id @default(cuid())
+  shopifyOrderId       String    @map("shopify_order_id")
+  shopifyLineId        String    @map("shopify_line_id")
+  vendorId             String?   @map("vendor_id")
+  isPlatformOwn        Boolean   @default(false) @map("is_platform_own")
+  title                String
+  quantity             Int
+  gross                Decimal   @db.Decimal(12, 2)
+  discount             Decimal   @db.Decimal(12, 2)
+  productNet           Decimal   @map("product_net") @db.Decimal(12, 2)
+  vendorVat            Decimal   @map("vendor_vat") @db.Decimal(12, 2)
+  taxAmount            Decimal   @default(0) @map("tax_amount") @db.Decimal(12, 2)
+  taxesIncluded        Boolean   @default(false) @map("taxes_included")
+  shippingAmount       Decimal   @default(0) @map("shipping_amount") @db.Decimal(12, 2)
+  shippingAllocation   String    @default("unassigned") @map("shipping_allocation")
+  commissionBase       Decimal   @map("commission_base") @db.Decimal(12, 2)
+  commissionAmount     Decimal   @map("commission_amount") @db.Decimal(12, 2)
+  vendorNet            Decimal   @map("vendor_net") @db.Decimal(12, 2)
+  paidAt               DateTime? @map("paid_at")
+  fulfilledAt          DateTime? @map("fulfilled_at")
+  returnWindowEndsAt   DateTime? @map("return_window_ends_at")
+  status               String
+  blockReason          String?   @map("block_reason")
+  settlementLineId     String?   @map("settlement_line_id")
+  order                OrderSnapshot @relation(fields: [shopifyOrderId], references: [shopifyOrderId])
+  vendor               Vendor?   @relation(fields: [vendorId], references: [id])
+  settlementLine       SettlementLine? @relation(fields: [settlementLineId], references: [id])
+  adjustments          Adjustment[]
+
+  @@unique([shopifyOrderId, shopifyLineId])
+  @@index([shopifyOrderId])
+  @@index([status])
+  @@map("order_lines")
+}
+
+model Adjustment {
+  id             String    @id @default(cuid())
+  orderLineId    String?   @map("order_line_id")
+  shopifyOrderId String?   @map("shopify_order_id")
+  type           String
+  amount         Decimal   @db.Decimal(12, 2)
+  status         String
+  source         String    @default("manual")
+  externalId     String?   @unique @map("external_id")
+  resolvedAt     DateTime? @map("resolved_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  line           OrderLine? @relation(fields: [orderLineId], references: [id])
+  order          OrderSnapshot? @relation(fields: [shopifyOrderId], references: [shopifyOrderId])
+
+  @@map("adjustments")
+}
+
+model MonthPack {
+  id        String   @id @default(cuid())
+  yearMonth String   @unique @map("year_month")
+  status    String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  lines     SettlementLine[]
+
+  @@map("month_packs")
+}
+
+model SettlementLine {
+  id                 String   @id @default(cuid())
+  monthPackId        String   @map("month_pack_id")
+  vendorId           String   @map("vendor_id")
+  kind               String
+  commissionBaseSum  Decimal  @map("commission_base_sum") @db.Decimal(12, 2)
+  commissionSum      Decimal  @map("commission_sum") @db.Decimal(12, 2)
+  vendorNetSum       Decimal  @map("vendor_net_sum") @db.Decimal(12, 2)
+  shippingSum        Decimal  @default(0) @map("shipping_sum") @db.Decimal(12, 2)
+  orderLineCount     Int      @default(0) @map("order_line_count")
+  feeNotes           String?  @map("fee_notes")
+  status             String
+  stripeTransferId   String?  @map("stripe_transfer_id")
+  pack               MonthPack @relation(fields: [monthPackId], references: [id])
+  vendor             Vendor   @relation(fields: [vendorId], references: [id])
+  orderLines         OrderLine[]
+  attempts           TransferAttempt[]
+
+  @@unique([monthPackId, vendorId, kind])
+  @@index([monthPackId])
+  @@map("settlement_lines")
+}
+
+model Approval {
+  id         String   @id @default(cuid())
+  entityType String   @map("entity_type")
+  entityId   String   @map("entity_id")
+  actorEmail String   @map("actor_email")
+  decision   String
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@map("approvals")
+}
+
+model AuditEvent {
+  id         String   @id @default(cuid())
+  action     String
+  actorEmail String   @map("actor_email")
+  payloadJson Json    @map("payload_json")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@map("audit_events")
+}
+
+model TransferAttempt {
+  id                String   @id @default(cuid())
+  settlementLineId  String   @map("settlement_line_id")
+  idempotencyKey    String   @unique @map("idempotency_key")
+  amount            Decimal  @db.Decimal(12, 2)
+  stripeTransferId  String?  @map("stripe_transfer_id")
+  status            String
+  error             String?
+  createdAt         DateTime @default(now()) @map("created_at")
+  line              SettlementLine @relation(fields: [settlementLineId], references: [id])
+
+  @@map("transfer_attempts")
+}
+
+model EmailMessage {
+  id        String   @id @default(cuid())
+  toEmail   String   @map("to_email")
+  subject   String
+  body      String
+  delivery  String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("email_messages")
+}
