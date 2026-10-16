@@ -11,3 +11,5 @@ const app = await buildApp({ config, db });
 const port = Number(process.env.PORT ?? 3000);
 await app.listen({ port, host: "0.0.0.0" });
 console.log(`Nirvan Earth settlement ledger at http://localhost:${port}`);
+// reloaded
+
