@@ -9,6 +9,7 @@ import { actorFromRequest, passwordsMatch, setSessionCookie } from "./auth.ts";
 import type { AppConfig } from "./config.ts";
 import { HttpError } from "./config.ts";
 import { enrichLines, ingestShopifyOrder, qualifyAll } from "./ingest.ts";
+import { runSeedDemo } from "./seed-demo.ts";
 import { createMailer, type Mailer } from "./mailer.ts";
 import { approvePack, generateMonthPack, getPack, submitPack } from "./pack.ts";
 import { executePack } from "./execute.ts";
@@ -254,6 +255,11 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     const actor = actorFromRequest(request, config);
     const body = (request.body ?? {}) as { days?: number };
     return syncPaidOrders(actor, body.days);
+  });
+
+  app.post("/api/seed/demo", async (request) => {
+    actorFromRequest(request, config);
+    return runSeedDemo(db, config);
   });
 
   app.post("/api/enrich", async (request) => {
