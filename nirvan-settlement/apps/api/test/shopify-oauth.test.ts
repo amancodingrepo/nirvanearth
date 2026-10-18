@@ -233,3 +233,28 @@ test("Shopify API client - fetchPaidOrders uses stored token in header", async (
     globalThis.fetch = originalFetch;
   }
 });
+
+test("Fastify - handles empty JSON body gracefully on POST requests", async () => {
+  const config = loadConfig({
+    DATABASE_URL: "postgresql://test:test@localhost:5432/test",
+    SHOPIFY_API_KEY: "dummy_key",
+    SHOPIFY_API_SECRET: "dummy_secret",
+  });
+  const mockDb = {
+    $queryRaw: async () => [{ 1: 1 }],
+  } as any;
+  const app = await buildApp({ config, db: mockDb });
+
+  // Test POST with Content-Type application/json and empty string body
+  const resEmptyBody = await app.inject({
+    method: "POST",
+    url: "/api/sync",
+    headers: { "content-type": "application/json" },
+    payload: "",
+  });
+
+  // Should NOT throw 500 "Body cannot be empty when content-type is set to 'application/json'"
+  // Since no session cookie is provided, it should reach actorFromRequest and return 401 "Sign in required."
+  assert.equal(resEmptyBody.statusCode, 401);
+  assert.deepEqual(JSON.parse(resEmptyBody.payload), { error: "Sign in required." });
+});

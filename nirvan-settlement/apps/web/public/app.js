@@ -34,11 +34,20 @@ function payoutFor(yearMonth) {
 }
 
 async function api(path, options = {}) {
+  const headers = { ...(options.headers || {}) };
+  let body = undefined;
+  if (options.body !== undefined) {
+    headers["content-type"] = headers["content-type"] || "application/json";
+    body = typeof options.body === "string" ? options.body : JSON.stringify(options.body);
+  } else if (options.method && ["POST", "PUT", "PATCH"].includes(options.method.toUpperCase())) {
+    headers["content-type"] = "application/json";
+    body = "{}";
+  }
   const response = await fetch(path, {
     credentials: "same-origin",
-    headers: { "content-type": "application/json", ...(options.headers || {}) },
     ...options,
-    body: options.body ? JSON.stringify(options.body) : undefined,
+    headers,
+    body,
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || response.statusText);
