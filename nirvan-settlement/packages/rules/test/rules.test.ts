@@ -5,9 +5,15 @@ import {
   calculateCommission,
   computeLineMoney,
   dubaiYearMonth,
+  exampleGiftHamper,
+  exampleNonVatVendor,
+  exampleVatVendor,
+  exampleVatVendorDeliveryPaid,
   isPlatformOwn,
   isPlatformOwnProduct,
   isQualified,
+  mixedVendorOrder,
+  parseDeliveryAllowance,
   parseSellerSignal,
   qualifyLine,
   resolveSeller,
@@ -52,7 +58,7 @@ describe("commission", () => {
     assert.equal(result.commissionBase, 100);
     assert.equal(result.commissionAmount, 20);
     assert.equal(result.vendorVat, 5);
-    assert.equal(result.vendorNet, 80);
+    assert.equal(result.vendorNet, 85);
   });
 
   it("shows exclusive VAT separately and does not subtract it twice", () => {
@@ -65,6 +71,7 @@ describe("commission", () => {
     assert.equal(result.commissionBase, 100);
     assert.equal(result.commissionAmount, 20);
     assert.equal(result.vendorVat, 5);
+    assert.equal(result.vendorNet, 85);
   });
 
   it("skips platform own products", () => {
@@ -212,7 +219,8 @@ describe("spec line money", () => {
     assert.equal(result.productNet, 100);
     assert.equal(result.commissionBase, 100);
     assert.equal(result.commissionAmount, 20);
-    assert.equal(result.vendorNet, 80);
+    assert.equal(result.vendorVat, 5);
+    assert.equal(result.vendorNet, 85);
   });
 
   it("own_product", () => {
@@ -303,6 +311,99 @@ describe("spec sellers", () => {
   it("isPlatformOwn matches the configured tag", () => {
     assert.equal(isPlatformOwn({ tags: ["gift-hamper"], id: 1 }, { vendor: "Other" }, ownConfig), true);
     assert.equal(isPlatformOwn({ tags: ["honey"], id: 2 }, { vendor: "Gulf Honey Co" }, ownConfig), false);
+  });
+});
+
+describe("28 Oct 2026 worked examples", () => {
+  it("VAT vendor: commission on ex-VAT product after the included delivery allowance", () => {
+    const result = exampleVatVendor.result;
+    assert.equal(result.productSellingAfterDiscount, 126);
+    assert.equal(result.productNetExVat, 120);
+    assert.equal(result.deliveryAllowance, 20);
+    assert.equal(result.commissionBase, 100);
+    assert.equal(result.commissionAmount, 20);
+    assert.equal(result.vendorVat, 6);
+    assert.equal(result.deliveryAllocation, "unassigned");
+    assert.equal(result.vendorNet, 86);
+  });
+
+  it("pays the included delivery allowance only when it belongs to the vendor", () => {
+    assert.equal(exampleVatVendorDeliveryPaid.result.commissionBase, 100);
+    assert.equal(exampleVatVendorDeliveryPaid.result.commissionAmount, 20);
+    assert.equal(exampleVatVendorDeliveryPaid.result.vendorNet, 106);
+  });
+
+  it("non-VAT vendor: no VAT line, delivery allowance out of the base", () => {
+    const result = exampleNonVatVendor.result;
+    assert.equal(result.vendorVat, 0);
+    assert.equal(result.productSellingAfterDiscount, 150);
+    assert.equal(result.commissionBase, 120);
+    assert.equal(result.commissionAmount, 24);
+    assert.equal(result.vendorNet, 96);
+  });
+
+  it("excludes a platform gift hamper from vendor settlement", () => {
+    assert.equal(exampleGiftHamper.result.skipped, true);
+    assert.equal(exampleGiftHamper.result.commissionAmount, 0);
+    assert.equal(exampleGiftHamper.result.vendorNet, 0);
+    assert.equal(exampleGiftHamper.result.vendorVat, 0);
+  });
+
+  it("mixed-vendor order settles only the two third-party lines", () => {
+    const order = mixedVendorOrder();
+    assert.equal(order.lines.length, 3);
+    assert.equal(order.customerProductTotal, 456);
+    assert.equal(order.separateShipping, 15);
+    assert.equal(order.commissionTotal, 44);
+    assert.equal(order.vendorEntitlementTotal, 182);
+    assert.equal(order.lines[2]!.result.skipped, true);
+  });
+
+  it("reads an included delivery allowance from line properties", () => {
+    assert.deepEqual(
+      parseDeliveryAllowance({
+        properties: [
+          { name: "delivery_allowance", value: "20" },
+          { name: "delivery_allocation", value: "vendor" },
+        ],
+      }),
+      { amount: 20, allocation: "vendor", source: "property" },
+    );
+    assert.deepEqual(parseDeliveryAllowance({}), {
+      amount: 0,
+      allocation: "unassigned",
+      source: "default",
+    });
+  });
+});
+
+describe("cancel and unpaid qualification", () => {
+  const fulfilled = new Date("2026-09-01T08:00:00.000Z");
+  const ends = addDays(fulfilled, 14);
+  const now = new Date(ends.getTime() + 1000);
+  const base = {
+    isPlatformOwn: false,
+    vendorId: "v1",
+    fulfilledAt: fulfilled,
+    returnWindowEndsAt: ends,
+    hasOpenAdjustment: false,
+    now,
+  };
+
+  it("blocks a cancelled order", () => {
+    assert.equal(qualifyLine({ ...base, cancelled: true }).reason, "cancelled");
+  });
+
+  it("blocks a fully refunded order", () => {
+    assert.equal(qualifyLine({ ...base, financialStatus: "refunded" }).reason, "refunded");
+  });
+
+  it("blocks an unpaid order", () => {
+    assert.equal(qualifyLine({ ...base, financialStatus: "pending" }).reason, "unpaid");
+  });
+
+  it("still qualifies a paid order", () => {
+    assert.equal(qualifyLine({ ...base, financialStatus: "paid" }).qualified, true);
   });
 });
 

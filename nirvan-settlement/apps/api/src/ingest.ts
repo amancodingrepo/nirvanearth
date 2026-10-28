@@ -2,10 +2,12 @@ import type { Prisma, PrismaClient } from "@prisma/client";
 import {
   calculateCommission,
   isPlatformOwn,
+  parseDeliveryAllowance,
   qualifyLine,
   resolveSeller,
   returnWindowEndsAt,
   roundMoney,
+  type DeliveryAllocation,
 } from "@nirvan/rules";
 import { recordAudit } from "./audit.ts";
 import type { AppConfig } from "./config.ts";
@@ -108,15 +110,20 @@ async function upsertLine(
   );
 
   const vendor = vendorId ? await db.vendor.findUnique({ where: { id: vendorId } }) : null;
-  const vendorVat = vendor?.vatRegistered ? taxAmount : 0;
+  const vatRegistered = Boolean(vendor?.vatRegistered);
+  const vendorVat = vatRegistered ? taxAmount : 0;
+  const delivery = parseDeliveryAllowance(line);
   const fulfilledAt = fulfillmentTime(order, line.id);
   const money = calculateCommission({
     gross,
     discount,
     vendorVat,
+    vatRegistered,
     taxesIncluded,
     commissionRate: config.commissionRate,
     shippingAmount: 0,
+    deliveryAllowance: delivery.amount,
+    deliveryAllocation: delivery.allocation,
     isPlatformOwn: own,
   });
 
@@ -133,6 +140,8 @@ async function upsertLine(
     taxesIncluded,
     shippingAmount: dec(0),
     shippingAllocation: "unassigned",
+    deliveryAllowance: dec(money.deliveryAllowance),
+    deliveryAllocation: money.deliveryAllocation,
     commissionBase: dec(money.commissionBase),
     commissionAmount: dec(money.commissionAmount),
     vendorNet: dec(money.vendorNet),
@@ -254,7 +263,7 @@ export async function enrichLines(
   let orders = 0;
   let lines = 0;
   for (const snapshot of snapshots) {
-    const order = snapshot.rawJson as ShopifyOrder;
+    const order = snapshot.rawJson as unknown as ShopifyOrder;
     if (!order || order.id == null) continue;
     const result = await ingestShopifyOrder(db, config, order, actorEmail, now);
     orders += 1;
@@ -345,7 +354,7 @@ export async function refreshLineQualification(
 ): Promise<void> {
   const lines = await db.orderLine.findMany({
     where: shopifyOrderId ? { shopifyOrderId } : undefined,
-    include: { adjustments: true, vendor: true },
+    include: { adjustments: true, vendor: true, order: true },
   });
 
   for (const line of lines) {
@@ -355,16 +364,28 @@ export async function refreshLineQualification(
         .filter((item) => item.status === "resolved" && item.orderLineId === line.id)
         .reduce((sum, item) => sum + Number(item.amount), 0),
     );
-    const vendorVat = line.vendor?.vatRegistered ? Number(line.taxAmount) : 0;
+    const raw = line.order.rawJson as unknown as ShopifyOrder;
+    const rawLine = (raw.line_items ?? []).find((item) => String(item.id) === line.shopifyLineId);
+    const delivery = rawLine ? parseDeliveryAllowance(rawLine) : {
+      amount: Number(line.deliveryAllowance),
+      allocation: line.deliveryAllocation as DeliveryAllocation,
+      source: "default" as const,
+    };
+    const vatRegistered = Boolean(line.vendor?.vatRegistered);
+    const vendorVat = vatRegistered ? Number(line.taxAmount) : 0;
     const money = calculateCommission({
       gross: Number(line.gross),
       discount: Number(line.discount),
       vendorVat,
+      vatRegistered,
       taxesIncluded: line.taxesIncluded,
       commissionRate: config.commissionRate,
       isPlatformOwn: line.isPlatformOwn,
       resolvedAdjustment: resolved,
+      deliveryAllowance: delivery.amount,
+      deliveryAllocation: delivery.allocation,
     });
+    const financialStatus = raw.financial_status ?? line.order.financialStatus;
     const qualification = qualifyLine({
       isPlatformOwn: line.isPlatformOwn,
       vendorId: line.vendorId,
@@ -372,6 +393,8 @@ export async function refreshLineQualification(
       returnWindowEndsAt: line.returnWindowEndsAt,
       hasOpenAdjustment: line.adjustments.some((item) => item.status === "open"),
       now,
+      cancelled: Boolean(raw.cancelled_at) || financialStatus === "voided",
+      financialStatus,
     });
     await db.orderLine.update({
       where: { id: line.id },
@@ -381,6 +404,8 @@ export async function refreshLineQualification(
         commissionBase: dec(money.commissionBase),
         commissionAmount: dec(money.commissionAmount),
         vendorNet: dec(money.vendorNet),
+        deliveryAllowance: dec(money.deliveryAllowance),
+        deliveryAllocation: money.deliveryAllocation,
         status: qualification.status,
         blockReason: qualification.qualified ? null : qualification.reason,
       },

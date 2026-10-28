@@ -126,7 +126,7 @@ describe("settlement matrix", () => {
     assert.equal(money(line.vendorVat), 5);
     assert.equal(money(line.commissionBase), 100);
     assert.equal(money(line.commissionAmount), 20);
-    assert.equal(money(line.vendorNet), 80);
+    assert.equal(money(line.vendorNet), 85);
   });
 
   it("5 non-VAT vendor: no vendor VAT", async () => {
@@ -156,6 +156,68 @@ describe("settlement matrix", () => {
     assert.equal(money(line.commissionBase), 90);
     assert.equal(money(line.commissionAmount), 18);
     assert.equal(money(line.vendorNet), 72);
+  });
+
+  it("28 Oct mixed cart: delivery allowance, VAT, non-VAT, and hamper", async () => {
+    await vendor("Desert Botanics", { vatRegistered: true, stripeAccountId: "acct_desert" });
+    await vendor("Gulf Honey Co", { vatRegistered: false, stripeAccountId: "acct_honey" });
+    await ingest(order({
+      id: 28,
+      paidAt: "2026-09-02T08:00:00.000Z",
+      fulfilledAt: "2026-09-02T12:00:00.000Z",
+      taxesIncluded: true,
+      shipping: 15,
+      lines: [
+        { id: 281, title: "Oil", price: 136, discount: 10, vat: 6, vendor: "Desert Botanics" },
+        { id: 282, title: "Honey", price: 160, discount: 10, vat: 5, vendor: "Gulf Honey Co" },
+        { id: 283, title: "Hamper", price: 180, vendor: "Nirvan Earth", tags: ["gift-hamper"] },
+      ],
+      lineExtras: {
+        281: { allowance: 20, allocation: "unassigned" },
+        282: { allowance: 30, allocation: "unassigned" },
+      },
+    }));
+
+    const lines = await db.orderLine.findMany({ orderBy: { shopifyLineId: "asc" } });
+    const oil = lines.find((line) => line.shopifyLineId === "281");
+    const honey = lines.find((line) => line.shopifyLineId === "282");
+    const hamper = lines.find((line) => line.shopifyLineId === "283");
+    assert.ok(oil && honey && hamper);
+    assert.equal(money(oil.commissionBase), 100);
+    assert.equal(money(oil.commissionAmount), 20);
+    assert.equal(money(oil.vendorVat), 6);
+    assert.equal(money(oil.deliveryAllowance), 20);
+    assert.equal(money(oil.vendorNet), 86);
+    assert.equal(money(honey.vendorVat), 0);
+    assert.equal(money(honey.commissionBase), 120);
+    assert.equal(money(honey.commissionAmount), 24);
+    assert.equal(money(honey.vendorNet), 96);
+    assert.equal(hamper.isPlatformOwn, true);
+    assert.equal(money(hamper.vendorNet), 0);
+
+    const snapshot = await db.orderSnapshot.findFirstOrThrow();
+    assert.equal(money(snapshot.shippingTotal), 15);
+    assert.equal(snapshot.shippingAllocation, "unassigned");
+
+    const pack = await generateMonthPack(db, config, "2026-09", ACTOR, NOW);
+    const payable = pack.lines.filter((line) => line.kind === "payable");
+    assert.equal(payable.length, 2);
+    const nets = payable.map((line) => money(line.vendorNetSum)).sort((a, b) => a - b);
+    assert.deepEqual(nets, [86, 96]);
+  });
+
+  it("cancelled order does not qualify", async () => {
+    await vendor("Desert Botanics");
+    await ingest(order({
+      id: 29,
+      paidAt: "2026-09-02T08:00:00.000Z",
+      fulfilledAt: "2026-09-02T12:00:00.000Z",
+      cancelled: true,
+      lines: [{ id: 291, title: "Oil", price: 100, vendor: "Desert Botanics" }],
+    }));
+    const line = await db.orderLine.findFirstOrThrow();
+    assert.equal(line.status, "blocked");
+    assert.equal(line.blockReason, "cancelled");
   });
 
   it("7 open refund: blocked and not transferred", async () => {
@@ -396,12 +458,16 @@ function order(input: {
   }>;
   refunds?: Array<{ id: number; lineId: number; amount: number }>;
   adjustments?: Array<{ type: string; amount: number; lineId: number }>;
+  cancelled?: boolean;
+  financialStatus?: string;
+  lineExtras?: Record<number, { allowance?: number; allocation?: string; quantity?: number }>;
 }): ShopifyOrder {
   return {
     id: input.id,
     name: `#${input.id}`,
     currency: "AED",
-    financial_status: "paid",
+    financial_status: input.financialStatus ?? "paid",
+    cancelled_at: input.cancelled ? input.paidAt : null,
     fulfillment_status: "fulfilled",
     gateway: "shopify_payments",
     processed_at: input.paidAt,
@@ -426,8 +492,14 @@ function order(input: {
     line_items: input.lines.map((line) => ({
       id: line.id,
       title: line.title,
-      quantity: 1,
+      quantity: input.lineExtras?.[line.id]?.quantity ?? 1,
       price: line.price,
+      properties: input.lineExtras?.[line.id]?.allowance
+        ? [
+            { name: "delivery_allowance", value: String(input.lineExtras[line.id]!.allowance) },
+            { name: "delivery_allocation", value: input.lineExtras[line.id]!.allocation ?? "unassigned" },
+          ]
+        : [],
       total_discount: line.discount ?? 0,
       vendor: line.vendor,
       product_id: line.id,

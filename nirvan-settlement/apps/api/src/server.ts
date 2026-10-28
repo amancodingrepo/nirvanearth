@@ -3,7 +3,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import cookie from "@fastify/cookie";
 import fastifyStatic from "@fastify/static";
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import type { PrismaClient } from "@prisma/client";
 import { actorFromRequest, passwordsMatch, setSessionCookie } from "./auth.ts";
 import type { AppConfig } from "./config.ts";
@@ -21,8 +21,16 @@ import {
   isValidShopifyDomain,
   verifyShopifyHmac,
 } from "./shopify.ts";
+import { RULES_VERSION } from "@nirvan/rules";
 import { createStripeGateway, pingStripe } from "./stripe.ts";
 import type { TransferGateway } from "./types.ts";
+
+function redactSecrets(message: string): string {
+  return message
+    .replace(/postgres(?:ql)?:\/\/\S+/gi, "postgresql://***")
+    .replace(/\b(?:sk|rk|pk)_(?:test|live)_[A-Za-z0-9]+\b/g, "[redacted-key]")
+    .replace(/\bshp(?:at|ss|ca)_[A-Za-z0-9]+\b/g, "[redacted-token]");
+}
 
 export interface AppDeps {
   config: AppConfig;
@@ -39,12 +47,13 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   await app.register(cookie);
 
   app.addContentTypeParser("application/json", { parseAs: "string" }, (_req, body, done) => {
-    if (!body || (typeof body === "string" && body.trim().length === 0)) {
+    const raw = typeof body === "string" ? body : body.toString("utf8");
+    if (!raw.trim()) {
       done(null, {});
       return;
     }
     try {
-      done(null, JSON.parse(body));
+      done(null, JSON.parse(raw));
     } catch (err) {
       const error = err as Error & { statusCode?: number };
       error.statusCode = 400;
@@ -55,7 +64,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   app.setErrorHandler((error, _request, reply) => {
     const status = error instanceof HttpError ? error.status : 500;
     const message = error instanceof Error ? error.message : "Unexpected error";
-    reply.status(status).send({ error: message });
+    reply.status(status).send({ error: redactSecrets(message) });
   });
 
   app.get("/api/health", async () => {
@@ -65,7 +74,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       await db.$queryRaw`SELECT 1`;
       dbOk = true;
     } catch (error) {
-      dbError = error instanceof Error ? error.message : "database unavailable";
+      dbError = redactSecrets(error instanceof Error ? error.message : "database unavailable");
     }
 
     let stripe: { ok: boolean; mode: string; availableAed: number | null; error?: string };
@@ -77,23 +86,52 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
         ok: false,
         mode: gateway.mode,
         availableAed: null,
-        error: error instanceof Error ? error.message : "stripe unavailable",
+        error: redactSecrets(error instanceof Error ? error.message : "stripe unavailable"),
       };
     }
 
-    let shopifyStatus: { connected: boolean; shop: string; mode: string };
+    let shopifyConnected = false;
     try {
       const token = await getShopifyAccessToken(config, db);
-      shopifyStatus = { connected: Boolean(token), shop: config.shopifyShop, mode: "active" };
+      shopifyConnected = Boolean(token);
     } catch {
-      shopifyStatus = { connected: false, shop: config.shopifyShop, mode: "needs_auth" };
+      shopifyConnected = false;
     }
+
+    let webkulSellers: number | null = null;
+    if (dbOk) {
+      try {
+        webkulSellers = await db.vendor.count({
+          where: { OR: [{ webkulSellerId: { not: null } }, { externalKey: { not: null } }] },
+        });
+      } catch {
+        webkulSellers = null;
+      }
+    }
+
+    const testKeyPresent =
+      config.stripeSecretKey.startsWith("sk_test_") || config.stripeSecretKey.startsWith("rk_test_");
 
     return {
       ok: dbOk && stripe.ok,
+      rulesVersion: RULES_VERSION,
       db: { ok: dbOk, error: dbError },
-      stripe,
-      shopify: shopifyStatus,
+      stripe: {
+        ...stripe,
+        testKeyPresent,
+        liveTransfersBlocked: !config.allowLive,
+      },
+      shopify: {
+        connected: shopifyConnected,
+        shop: config.shopifyShop,
+        mode: shopifyConnected ? "active" : "needs_auth",
+        adminTokenPresent: Boolean(config.shopifyToken),
+        authPath: shopifyConnected ? null : "/shopify/auth",
+      },
+      webkul: {
+        apiConfigured: Boolean(process.env.WEBKUL_API_KEY || process.env.WEBKUL_ACCESS_TOKEN),
+        sellersInLedger: webkulSellers,
+      },
       mode: gateway.mode,
       shop: config.shopifyShop,
       liveBlocked: !config.allowLive,

@@ -607,7 +607,11 @@ async function renderHealth(me) {
       <div class="metric"><div class="label">Stripe</div><div class="value">${health.stripe.ok ? esc(health.stripe.mode) : "Down"}</div></div>
       <div class="metric"><div class="label">AED available</div><div class="value">${health.stripe.availableAed == null ? "—" : aed(health.stripe.availableAed)}</div></div>
       <div class="metric"><div class="label">Live transfers</div><div class="value">${health.liveBlocked ? "Blocked" : "Allowed"}</div></div>
+      <div class="metric"><div class="label">Shopify</div><div class="value">${health.shopify && health.shopify.connected ? "Connected" : "Not connected"}</div></div>
+      <div class="metric"><div class="label">Webkul sellers</div><div class="value">${health.webkul && health.webkul.sellersInLedger ? health.webkul.sellersInLedger : "None stored"}</div></div>
+      <div class="metric"><div class="label">Rules</div><div class="value">${esc((health.rulesVersion) || "—")}</div></div>
     </div>
+    <p class="msg">${health.shopify && !health.shopify.connected ? "Shopify auth path: " + esc(health.shopify.authPath || "/shopify/auth") : ""}</p>
     <p class="msg">${esc(health.db.error || health.stripe.error || "")}</p>
   `);
   bindChrome();

@@ -6,7 +6,7 @@ Test mode until `admin@nirvanearth.com` writes a go-live approval.
 2. Confirm vendors. Set VAT and the test Stripe Custom account id. Own products and gift hampers never get a vendor line.
 3. On or after the 10th, generate the pack for the previous calendar month (Dubai). Example: `npm run pack -- 2026-09`.
 4. The pack lists payable lines and held lines. Held lines are still inside the return window or have an open refund, chargeback, or dispute.
-5. Submit the pack. The approver gets an email (or an outbox row, if no email provider is configured).
+5. Submit the pack. The approver gets an email at `admin@nirvanearth.com` (or an outbox row, if `RESEND_API_KEY` is not set). The test from-address may be the provider's test sender, for example `onboarding@resend.dev`. A Nirvan Earth domain sender is not configured. Propose that SMTP domain to the client before production. Do not send settlement mail to customers or vendors from this app.
 6. Sign in as `admin@nirvanearth.com` and approve the payable lines.
 7. Execute transfers: `npm run execute -- --pack=<id>` or the button in the ledger.
 8. A failed line stays on the pack. Fix the destination or balance, then execute again. The idempotency key `transfer:<settlement_line_id>` stops a second payout.

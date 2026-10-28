@@ -68,6 +68,8 @@ model OrderLine {
   taxesIncluded        Boolean   @default(false) @map("taxes_included")
   shippingAmount       Decimal   @default(0) @map("shipping_amount") @db.Decimal(12, 2)
   shippingAllocation   String    @default("unassigned") @map("shipping_allocation")
+  deliveryAllowance    Decimal   @default(0) @map("delivery_allowance") @db.Decimal(12, 2)
+  deliveryAllocation   String    @default("unassigned") @map("delivery_allocation")
   commissionBase       Decimal   @map("commission_base") @db.Decimal(12, 2)
   commissionAmount     Decimal   @map("commission_amount") @db.Decimal(12, 2)
   vendorNet            Decimal   @map("vendor_net") @db.Decimal(12, 2)

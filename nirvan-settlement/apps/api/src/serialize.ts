@@ -16,6 +16,8 @@ export function presentLine(line: {
   vendorVat: Decimalish;
   shippingAmount: Decimalish;
   shippingAllocation: string;
+  deliveryAllowance?: Decimalish;
+  deliveryAllocation?: string;
   commissionBase: Decimalish;
   commissionAmount: Decimalish;
   vendorNet: Decimalish;
@@ -43,6 +45,8 @@ export function presentLine(line: {
     productNet: money(line.productNet),
     vendorVat: money(line.vendorVat),
     shippingAmount: money(line.shippingAmount),
+    deliveryAllowance: money(line.deliveryAllowance ?? 0),
+    deliveryAllocation: line.deliveryAllocation ?? "unassigned",
     orderShippingTotal: line.order ? money(line.order.shippingTotal) : 0,
     shippingAllocation: line.order?.shippingAllocation ?? line.shippingAllocation,
     commissionBase: money(line.commissionBase),

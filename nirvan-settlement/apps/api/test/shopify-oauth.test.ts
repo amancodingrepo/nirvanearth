@@ -112,7 +112,11 @@ test("Shopify OAuth - /shopify/auth and /shopify/callback HTTP flow", async () =
   const app = await buildApp({
     config,
     db: mockDb,
-    gateway: { mode: "test_gateway", executeTransfer: async () => ({ id: "m", status: "s", raw: {} }) },
+    gateway: {
+      mode: "simulated",
+      createTransfer: async () => ({ id: "m" }),
+      availableAed: async () => null,
+    },
   });
 
   // 1. Initiate OAuth

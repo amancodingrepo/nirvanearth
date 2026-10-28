@@ -30,6 +30,7 @@ export interface ShopifyOrder {
   created_at?: string | null;
   updated_at?: string | null;
   taxes_included?: boolean;
+  cancelled_at?: string | null;
   shipping_lines?: Array<{ price?: string | number }>;
   line_items?: ShopifyLineItem[];
   fulfillments?: Array<{

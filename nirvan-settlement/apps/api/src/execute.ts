@@ -59,9 +59,17 @@ export async function executePack(
       continue;
     }
 
-    const idempotencyKey = `transfer:${line.id}`;
     const vendorNet = money(line.vendorNetSum);
-    const existing = await db.transferAttempt.findUnique({ where: { idempotencyKey } });
+    const existing = await db.transferAttempt.findFirst({
+      where: { settlementLineId: line.id, status: "succeeded", stripeTransferId: { not: null } },
+      orderBy: { createdAt: "desc" },
+    });
+    const failedAttempts = await db.transferAttempt.count({
+      where: { settlementLineId: line.id, status: "failed" },
+    });
+    // A failed Stripe call still consumes its idempotency key. A retry must use a new key
+    // or Stripe replays the old error after the account becomes payable.
+    const idempotencyKey = failedAttempts === 0 ? `transfer:${line.id}` : `transfer:${line.id}:retry:${failedAttempts}`;
     if (existing?.status === "succeeded" && existing.stripeTransferId) {
       await db.settlementLine.update({
         where: { id: line.id },

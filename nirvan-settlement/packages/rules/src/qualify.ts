@@ -7,6 +7,13 @@ export interface QualifyInput {
   returnWindowEndsAt: Date | null;
   hasOpenAdjustment: boolean;
   now: Date;
+  /** Shopify `cancelled_at` or a voided order. Omitted means not cancelled. */
+  cancelled?: boolean;
+  /**
+   * Shopify `financial_status`. Omitted skips the paid/refund check so older
+   * callers keep the fulfilment and return-window rules only.
+   */
+  financialStatus?: string | null;
 }
 
 export interface QualifyResult {
@@ -26,6 +33,26 @@ export function qualifyLine(input: QualifyInput): QualifyResult {
   }
   if (!input.vendorId) {
     return { qualified: false, status: "blocked", reason: "no_vendor" };
+  }
+  const financialStatus = (input.financialStatus ?? "").trim().toLowerCase();
+  if (
+    input.cancelled ||
+    financialStatus === "voided" ||
+    financialStatus === "cancelled" ||
+    financialStatus === "canceled"
+  ) {
+    return { qualified: false, status: "blocked", reason: "cancelled" };
+  }
+  if (financialStatus === "refunded") {
+    return { qualified: false, status: "blocked", reason: "refunded" };
+  }
+  if (
+    financialStatus &&
+    financialStatus !== "paid" &&
+    financialStatus !== "partially_paid" &&
+    financialStatus !== "partially_refunded"
+  ) {
+    return { qualified: false, status: "blocked", reason: "unpaid" };
   }
   if (!input.fulfilledAt) {
     return { qualified: false, status: "open", reason: "not_fulfilled" };

@@ -7,7 +7,7 @@ Run on 12 October 2026 with `npm test` against `nirvan_settlement_test`. Stripe 
 | 1 | Single-vendor order | Pass. Base 100, commission 20, net 80. Shipping 15 stored as unassigned. |
 | 2 | Mixed-vendor cart | Pass. Two settlement lines, two transfers. |
 | 3 | Own product / gift hamper | Pass. No vendor and no settlement line. |
-| 4 | VAT vendor | Pass. Inclusive 105 with VAT 5 → base 100, commission 20. |
+| 4 | VAT vendor | Inclusive 105 with VAT 5 → base 100, commission 20, entitlement 85 (VAT added back, rules 2026-10-28). |
 | 5 | Non-VAT vendor | Pass. Tax line ignored. Vendor VAT 0. |
 | 6 | Discount | Pass. 100 minus 10 → base 90, commission 18, net 72. |
 | 7 | Refund before qualify | Pass. Blocked. No transfer. |

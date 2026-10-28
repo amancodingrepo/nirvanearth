@@ -9,15 +9,29 @@ export interface OutboundMail {
   text: string;
 }
 
+export interface MailSendResult {
+  id: string | null;
+}
+
 export interface Mailer {
-  send(message: OutboundMail): Promise<void>;
+  send(message: OutboundMail): Promise<MailSendResult>;
+}
+
+const APPROVER_NOTIFY = "admin@nirvanearth.com";
+
+function redactEmailError(status: number, body: string): string {
+  const cleaned = body
+    .replace(/\b(?:sk|rk|pk)_(?:test|live)_[A-Za-z0-9]+\b/g, "[redacted-key]")
+    .replace(/bearer\s+[A-Za-z0-9._\-]+/gi, "bearer [redacted]")
+    .slice(0, 300);
+  return `Email provider returned ${status}: ${cleaned}`;
 }
 
 export function createMailer(config: AppConfig): Mailer {
   if (!config.resendApiKey) {
     return {
       async send() {
-        return;
+        return { id: null };
       },
     };
   }
@@ -37,9 +51,18 @@ export function createMailer(config: AppConfig): Mailer {
           text: message.text,
         }),
       });
+      const raw = await response.text();
       if (!response.ok) {
-        throw new Error(`Email provider returned ${response.status}: ${await response.text()}`);
+        throw new Error(redactEmailError(response.status, raw));
       }
+      let id: string | null = null;
+      try {
+        const parsed = JSON.parse(raw) as { id?: unknown };
+        if (typeof parsed.id === "string" && parsed.id.startsWith("re_")) id = parsed.id;
+      } catch {
+        id = null;
+      }
+      return { id };
     },
   };
 }
@@ -51,15 +74,35 @@ export async function notify(
   input: { subject: string; text: string; action: string; actorEmail: string },
 ): Promise<void> {
   let delivery = config.resendApiKey ? "sent" : "outbox";
+  let providerMessageId: string | null = null;
+  if (config.notifyEmail !== APPROVER_NOTIFY) {
+    delivery = "blocked";
+    await db.emailMessage.create({
+      data: {
+        toEmail: config.notifyEmail,
+        subject: input.subject,
+        body: input.text,
+        delivery,
+      },
+    });
+    await recordAudit(db, "email.blocked", input.actorEmail, {
+      subject: input.subject,
+      reason: "notify_recipient_not_approver",
+    });
+    return;
+  }
   try {
-    await mailer.send({
+    const sent = await mailer.send({
       to: config.notifyEmail,
       from: config.emailFrom,
       subject: input.subject,
       text: input.text,
     });
+    providerMessageId = sent.id;
+    if (config.resendApiKey && !providerMessageId) delivery = "sent_unconfirmed";
   } catch (error) {
     delivery = "failed";
+    const message = error instanceof Error ? error.message : String(error);
     await db.emailMessage.create({
       data: {
         toEmail: config.notifyEmail,
@@ -70,7 +113,7 @@ export async function notify(
     });
     await recordAudit(db, "email.failed", input.actorEmail, {
       subject: input.subject,
-      error: error instanceof Error ? error.message : String(error),
+      error: message.slice(0, 300),
     });
     return;
   }
@@ -87,5 +130,6 @@ export async function notify(
     subject: input.subject,
     delivery,
     to: config.notifyEmail,
+    providerMessageId,
   });
 }
