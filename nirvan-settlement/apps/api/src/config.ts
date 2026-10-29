@@ -21,6 +21,8 @@ export interface AppConfig {
   adminPassword: string;
   sessionSecret: string;
   allowLive: boolean;
+  enablePayoutTrigger: boolean;
+  stripeWebhookSecret: string;
 }
 
 function splitList(value: string | undefined): string[] {
@@ -85,6 +87,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     adminPassword: env.ADMIN_PASSWORD ?? "change-me",
     sessionSecret: env.SESSION_SECRET ?? "dev-session-secret",
     allowLive,
+    enablePayoutTrigger: env.ENABLE_PAYOUT_TRIGGER === "true",
+    stripeWebhookSecret: env.STRIPE_WEBHOOK_SECRET ?? "",
   };
 }
 

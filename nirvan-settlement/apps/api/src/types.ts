@@ -62,8 +62,26 @@ export interface TransferRequest {
   transferGroup: string;
 }
 
+export interface PayoutRequest {
+  amountFils: number;
+  currency: "aed";
+  stripeAccountId: string;
+  idempotencyKey: string;
+  metadata: Record<string, string>;
+}
+
+export interface PayoutResult {
+  id: string;
+  status: string;
+  arrivalDate: string | null;
+  failureCode?: string | null;
+}
+
 export interface TransferGateway {
   mode: "stripe-test" | "simulated";
   createTransfer(input: TransferRequest): Promise<{ id: string }>;
   availableAed(): Promise<number | null>;
+  createPayout?(input: PayoutRequest): Promise<PayoutResult>;
 }
+
+export type PayoutGateway = TransferGateway;

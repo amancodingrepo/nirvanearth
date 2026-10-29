@@ -1,4 +1,5 @@
 import { money } from "./money-db.ts";
+import { payoutLabel } from "./payout.ts";
 
 type Decimalish = { toString(): string } | number | null;
 
@@ -66,6 +67,7 @@ export function presentPack(pack: {
   yearMonth: string;
   status: string;
   createdAt: Date;
+  ruleVersion?: { versionLabel: string } | null;
   lines: Array<{
     id: string;
     vendorId: string;
@@ -79,6 +81,8 @@ export function presentPack(pack: {
     status: string;
     stripeTransferId: string | null;
     vendor: { name: string; email: string | null; vatRegistered: boolean; stripeAccountId: string | null };
+    invoice?: { id: string; number: string } | null;
+    payouts?: Array<{ status: string }>;
   }>;
 }) {
   const payable = pack.lines.filter((line) => line.kind === "payable");
@@ -88,6 +92,7 @@ export function presentPack(pack: {
     yearMonth: pack.yearMonth,
     status: pack.status,
     createdAt: pack.createdAt,
+    ruleVersionLabel: pack.ruleVersion?.versionLabel ?? null,
     payableTotal: payable.reduce((sum, line) => sum + money(line.vendorNetSum), 0),
     commissionTotal: payable.reduce((sum, line) => sum + money(line.commissionSum), 0),
     heldTotal: held.reduce((sum, line) => sum + money(line.vendorNetSum), 0),
@@ -107,6 +112,9 @@ export function presentPack(pack: {
       feeNotes: line.feeNotes,
       status: line.status,
       stripeTransferId: line.stripeTransferId,
+      invoiceId: line.invoice?.id ?? null,
+      invoiceNumber: line.invoice?.number ?? null,
+      bankPayoutStatus: line.stripeTransferId ? payoutLabel(line.payouts?.[0]?.status ?? null) : null,
     })),
   };
 }

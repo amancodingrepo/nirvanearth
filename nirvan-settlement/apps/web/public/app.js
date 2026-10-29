@@ -9,6 +9,8 @@ const ICONS = {
   vendors: '<svg width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden="true"><circle cx="10" cy="7" r="2.4" stroke="currentColor" stroke-width="1.4"/><path d="M4.5 16.2c.8-2.4 2.8-3.7 5.5-3.7s4.7 1.3 5.5 3.7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
   audit: '<svg width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M6 3.5h6.2L16 7.3V16.5H6v-13Z" stroke="currentColor" stroke-width="1.4"/><path d="M12 3.8V7.4H15.5M8 11h5M8 13.5h3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
   health: '<svg width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M10 16s5-2.8 5-6.4A2.6 2.6 0 0 0 12.2 7c-.9 0-1.7.4-2.2 1.1C9.5 7.4 8.7 7 7.8 7A2.6 2.6 0 0 0 5 9.6C5 13.2 10 16 10 16Z" stroke="currentColor" stroke-width="1.4"/></svg>',
+  rules: '<svg width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M6 3.5h6.2L16 7.3V16.5H6v-13Z" stroke="currentColor" stroke-width="1.4"/></svg>',
+  owner: '<svg width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="3" y="4" width="14" height="12" rx="1.5" stroke="currentColor" stroke-width="1.4"/></svg>',
 };
 
 function esc(value) {
@@ -56,8 +58,10 @@ async function api(path, options = {}) {
 
 function route() {
   const hash = location.hash || "#/";
-  const [path, id] = hash.replace("#/", "").split("/");
-  return { path: path || "home", id };
+  const raw = hash.replace(/^#\/?/, "");
+  const [pathAndQuery, id] = raw.split("/");
+  const path = (pathAndQuery || "home").split("?")[0];
+  return { path, id: id ? id.split("?")[0] : undefined };
 }
 
 function badge(status) {
@@ -87,6 +91,8 @@ function shell(me, dash, body) {
         ${item("#/", "home", "Home", "home")}
         ${item("#/orders", "orders", "Orders", "orders")}
         ${item("#/vendors", "vendors", "Vendors", "vendors")}
+        ${item("#/owner", "owner", "Own sales", "owner")}
+        ${item("#/rules", "rules", "Rules", "rules")}
         ${item("#/audit", "audit", "Audit", "audit")}
         ${item("#/health", "health", "Health", "health")}
         <div class="spacer"></div>
@@ -301,11 +307,11 @@ async function renderPack(me) {
     <p class="msg" id="msg"></p>
     <section class="card">
       <div class="card-head">Qualified <span class="muted">These amounts can transfer</span></div>
-      ${settlementTable(payable)}
+      ${settlementTable(payable, dash.payoutTriggerEnabled)}
     </section>
     <section class="card">
       <div class="card-head">Blocked or held <span class="muted">Return window, refund, or missing account</span></div>
-      ${settlementTable(held)}
+      ${settlementTable(held, false)}
     </section>
   `);
   bindChrome();
@@ -328,9 +334,16 @@ async function renderPack(me) {
       if (failed.length) app.querySelector("#msg").textContent = failed.map((item) => `${item.vendorName}: ${item.error}`).join(" · ");
     } catch (error) { say(error); }
   });
+  for (const button of app.querySelectorAll("[data-payout]")) {
+    button.addEventListener("click", async () => {
+      const ok = await ask("Request bank payout?", "This asks Stripe to pay the connected account out to its bank. It does not send another transfer.", "Request payout");
+      if (!ok) return;
+      try { await api(`/api/lines/${button.dataset.payout}/payout`, { method: "POST" }); await render(); } catch (error) { say(error); }
+    });
+  }
 }
 
-function settlementTable(lines) {
+function settlementTable(lines, payoutsEnabled) {
   if (!lines.length) return `<div class="empty">None.</div>`;
   return `
     <div class="table-wrap">
@@ -358,8 +371,8 @@ function settlementTable(lines) {
               <td class="num">${aed(line.commissionSum)}</td>
               <td class="num">${aed(line.shippingSum)}</td>
               <td class="num">${aed(line.vendorNetSum)}</td>
-              <td>${badge(line.status)}</td>
-              <td>${line.stripeTransferId ? esc(line.stripeTransferId) : "—"}</td>
+              <td>${badge(line.status)}${line.bankPayoutStatus ? `<div class="muted">${esc(line.bankPayoutStatus)}</div>` : ""}</td>
+              <td>${line.stripeTransferId ? esc(line.stripeTransferId) : "—"}${line.invoiceNumber ? `<div><a href="/api/lines/${esc(line.id)}/invoice">Download statement</a></div>` : ""}${payoutsEnabled && line.status === "transferred" ? `<div><button type="button" data-payout="${esc(line.id)}">Request bank payout</button></div>` : ""}</td>
             </tr>
           `).join("")}
         </tbody>
@@ -513,6 +526,22 @@ async function renderVendors(me) {
         <p class="msg" id="msg"></p>
       </div>
     </section>
+    <section class="card">
+      <div class="card-head">Payment advice</div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Vendor</th><th>Advice</th><th class="num">Net paid</th><th></th></tr></thead>
+          <tbody>
+            ${vendors.flatMap((vendor) => (vendor.invoices || []).map((invoice) => `<tr>
+              <td>${esc(vendor.name)}</td>
+              <td>${esc(invoice.number)}</td>
+              <td class="num">${aed(invoice.amount)}</td>
+              <td><a href="/api/lines/${esc(invoice.settlementLineId)}/invoice">Download statement</a></td>
+            </tr>`)).join("") || `<tr><td colspan="4"><div class="empty">No payment advice yet. One is created after a transfer.</div></td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </section>
   `);
   bindChrome();
   for (const row of app.querySelectorAll("tr[data-id]")) {
@@ -627,7 +656,121 @@ async function render() {
   if (path === "vendors") return renderVendors(me);
   if (path === "audit") return renderAudit(me);
   if (path === "packs") return renderPack(me);
+  if (path === "owner") return renderOwner(me);
+  if (path === "rules") return renderRules(me);
   return renderHome(me);
+}
+
+async function renderOwner(me) {
+  const period = new URLSearchParams(location.hash.split("?")[1] || "").get("period")
+    || new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Dubai" }).slice(0, 7);
+  const [report, dash] = await Promise.all([api(`/api/reports/owner?period=${encodeURIComponent(period)}`), api("/api/dashboard")]);
+  app.innerHTML = shell(me, dash, `
+    <div class="page-head">
+      <div>
+        <h1>Platform own sales</h1>
+        <p class="page-sub">Gift hampers and Nirvan Earth products. These amounts are not paid to vendors and have no Stripe transfer.</p>
+      </div>
+      <a class="secondary" href="/api/reports/owner?period=${esc(period)}&format=csv">Download CSV</a>
+    </div>
+    <div class="metrics">
+      <div class="metric"><div class="label">Period</div><div class="value">${esc(report.period)}</div></div>
+      <div class="metric"><div class="label">Gross</div><div class="value">${aed(report.gross)}</div></div>
+      <div class="metric"><div class="label">Discounts</div><div class="value">${aed(report.discount)}</div></div>
+      <div class="metric"><div class="label">Tax</div><div class="value">${aed(report.tax)}</div></div>
+    </div>
+    <section class="card">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Order</th><th>Product</th><th class="num">Gross</th><th class="num">Discount</th><th class="num">Tax</th></tr></thead>
+          <tbody>
+            ${(report.lines || []).map((line) => `<tr><td>${esc(line.orderNumber)}</td><td>${esc(line.title)}</td><td class="num">${aed(line.gross)}</td><td class="num">${aed(line.discount)}</td><td class="num">${aed(line.tax)}</td></tr>`).join("") || `<tr><td colspan="5"><div class="empty">No own-product lines in this month.</div></td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `);
+  bindChrome();
+}
+
+async function renderRules(me) {
+  const [{ versions }, dash] = await Promise.all([api("/api/rules"), api("/api/dashboard")]);
+  const active = versions.find((version) => version.status === "active");
+  const payload = active && active.payload ? active.payload : {};
+  app.innerHTML = shell(me, dash, `
+    <div class="page-head">
+      <div>
+        <h1>Calculation rules</h1>
+        <p class="page-sub">A new version applies only after admin@nirvanearth.com approves it. Closed packs keep the version stored when they were generated.</p>
+      </div>
+    </div>
+    <form id="rule-form" class="card" style="padding:16px">
+      <div class="filters">
+        <input name="versionLabel" value="${esc(payload.rulesVersion || "2026-10-28")}" aria-label="Version label" />
+        <input name="commissionRate" value="${esc(payload.commissionRate ?? 0.2)}" aria-label="Commission rate" />
+        <input name="returnWindowDays" value="${esc(payload.returnWindowDays ?? 14)}" aria-label="Return window days" />
+      </div>
+      <div class="filters">
+        <input name="platformOwnTags" value="${esc((payload.platformOwnTags || []).join(", "))}" aria-label="Own product tags" style="min-width:240px" />
+        <input name="platformOwnVendorNames" value="${esc((payload.platformOwnVendorNames || []).join(", "))}" aria-label="Own vendor names" style="min-width:240px" />
+      </div>
+      <label><input type="checkbox" name="includeVendorVatInNet" ${payload.includeVendorVatInNet === false ? "" : "checked"} /> Add vendor VAT back into net</label>
+      <label><input type="checkbox" name="excludeDeliveryAllowanceFromCommissionBase" ${payload.excludeDeliveryAllowanceFromCommissionBase === false ? "" : "checked"} /> Exclude delivery allowance from commission base</label>
+      <div class="filters">
+        <input name="effectiveFrom" value="${esc(payload.effectiveFrom || "")}" aria-label="Effective from" placeholder="Effective from YYYY-MM-DD" />
+        <input name="notes" value="${esc(payload.notes || "")}" aria-label="Notes" placeholder="Notes" style="min-width:280px" />
+      </div>
+      <div class="page-actions" style="margin-top:12px"><button class="primary" type="submit">Save draft</button></div>
+      <p class="msg" id="msg"></p>
+    </form>
+    <section class="card">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Version</th><th>Status</th><th>Rate</th><th></th></tr></thead>
+          <tbody>
+            ${versions.map((version) => `<tr>
+              <td>${esc(version.versionLabel)}</td>
+              <td>${badge(version.status)}</td>
+              <td>${esc(version.payload && version.payload.commissionRate != null ? version.payload.commissionRate : "")}</td>
+              <td>
+                ${version.status === "draft" ? `<button type="button" data-submit="${esc(version.id)}">Submit</button>` : ""}
+                ${version.status === "pending_approval" && me.approver ? `<button type="button" data-approve="${esc(version.id)}">Approve</button>` : ""}
+              </td>
+            </tr>`).join("")}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `);
+  bindChrome();
+  const say = (error) => { app.querySelector("#msg").textContent = error?.message || error || ""; };
+  app.querySelector("#rule-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const body = {
+      versionLabel: form.versionLabel.value,
+      commissionRate: Number(form.commissionRate.value),
+      returnWindowDays: Number(form.returnWindowDays.value),
+      platformOwnTags: form.platformOwnTags.value.split(",").map((item) => item.trim()).filter(Boolean),
+      platformOwnVendorNames: form.platformOwnVendorNames.value.split(",").map((item) => item.trim()).filter(Boolean),
+      includeVendorVatInNet: form.includeVendorVatInNet.checked,
+      excludeDeliveryAllowanceFromCommissionBase: form.excludeDeliveryAllowanceFromCommissionBase.checked,
+      effectiveFrom: form.effectiveFrom.value,
+      notes: form.notes.value,
+      rulesVersion: form.versionLabel.value,
+    };
+    try { await api("/api/rules", { method: "POST", body }); await render(); } catch (error) { say(error); }
+  });
+  for (const button of app.querySelectorAll("[data-submit]")) {
+    button.addEventListener("click", async () => {
+      try { await api(`/api/rules/${button.dataset.submit}/submit`, { method: "POST" }); await render(); } catch (error) { say(error); }
+    });
+  }
+  for (const button of app.querySelectorAll("[data-approve]")) {
+    button.addEventListener("click", async () => {
+      try { await api(`/api/rules/${button.dataset.approve}/approve`, { method: "POST" }); await render(); } catch (error) { say(error); }
+    });
+  }
 }
 
 window.addEventListener("hashchange", () => {

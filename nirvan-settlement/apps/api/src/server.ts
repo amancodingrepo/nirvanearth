@@ -13,6 +13,10 @@ import { runSeedDemo } from "./seed-demo.ts";
 import { createMailer, type Mailer } from "./mailer.ts";
 import { approvePack, generateMonthPack, getPack, submitPack } from "./pack.ts";
 import { executePack } from "./execute.ts";
+import { ensureSettlementInvoice, invoicePdfForLine } from "./invoice.ts";
+import { ownerReportCsv, ownerSalesReport } from "./owner-report.ts";
+import { applyPayoutEvent, requestBankPayout } from "./payout.ts";
+import { approveRule, createDraftRule, listRules, submitRule } from "./rules-store.ts";
 import { presentLine, presentPack } from "./serialize.ts";
 import {
   exchangeShopifyCode,
@@ -22,7 +26,7 @@ import {
   verifyShopifyHmac,
 } from "./shopify.ts";
 import { RULES_VERSION } from "@nirvan/rules";
-import { createStripeGateway, pingStripe } from "./stripe.ts";
+import { constructStripeEvent, createStripeGateway, pingStripe } from "./stripe.ts";
 import type { TransferGateway } from "./types.ts";
 
 function redactSecrets(message: string): string {
@@ -46,8 +50,9 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
   await app.register(cookie);
 
-  app.addContentTypeParser("application/json", { parseAs: "string" }, (_req, body, done) => {
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
     const raw = typeof body === "string" ? body : body.toString("utf8");
+    (request as FastifyRequest & { rawBody?: string }).rawBody = raw;
     if (!raw.trim()) {
       done(null, {});
       return;
@@ -251,6 +256,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       currency: "AED",
       agreement: "NE-SA-2026-09-V3",
       notifyEmail: config.notifyEmail,
+      payoutTriggerEnabled: config.enablePayoutTrigger,
       orders,
       vendors,
       qualified,
@@ -313,7 +319,16 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
 
   app.get("/api/vendors", async (request) => {
     actorFromRequest(request, config);
-    const vendors = await db.vendor.findMany({ orderBy: { name: "asc" } });
+    const vendors = await db.vendor.findMany({
+      orderBy: { name: "asc" },
+      include: {
+        invoices: {
+          orderBy: { createdAt: "desc" },
+          take: 8,
+          select: { id: true, number: true, settlementLineId: true, amount: true, currency: true },
+        },
+      },
+    });
     return { vendors };
   });
 
@@ -427,6 +442,78 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       await db.settlementLine.deleteMany({ where: { monthPackId: id } });
     }
     return { pack: presentPack(await generateMonthPack(db, config, pack.yearMonth, actor)) };
+  });
+
+  app.get("/api/reports/owner", async (request, reply) => {
+    actorFromRequest(request, config);
+    const query = request.query as { period?: string; format?: string };
+    const period = query.period || new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Dubai" }).slice(0, 7);
+    const report = await ownerSalesReport(db, period);
+    if (query.format === "csv") {
+      reply.header("content-type", "text/csv; charset=utf-8");
+      reply.header("content-disposition", `attachment; filename="owner-sales-${period}.csv"`);
+      return reply.send(ownerReportCsv(report));
+    }
+    return report;
+  });
+
+  app.get("/api/rules", async (request) => {
+    actorFromRequest(request, config);
+    const versions = await listRules(db);
+    return { versions };
+  });
+
+  app.post("/api/rules", async (request) => {
+    const actor = actorFromRequest(request, config);
+    const version = await createDraftRule(db, config, actor, request.body ?? {});
+    return { version };
+  });
+
+  app.post("/api/rules/:id/submit", async (request) => {
+    const actor = actorFromRequest(request, config);
+    const { id } = request.params as { id: string };
+    return { version: await submitRule(db, config, mailer, id, actor) };
+  });
+
+  app.post("/api/rules/:id/approve", async (request) => {
+    const actor = actorFromRequest(request, config);
+    const { id } = request.params as { id: string };
+    return { version: await approveRule(db, config, mailer, id, actor) };
+  });
+
+  app.get("/api/lines/:id/invoice", async (request, reply) => {
+    const actor = actorFromRequest(request, config);
+    const { id } = request.params as { id: string };
+    try {
+      await ensureSettlementInvoice(db, config, mailer, { lineId: id, actorEmail: actor });
+    } catch (error) {
+      if (error instanceof HttpError && error.status === 409) {
+        throw new HttpError(404, "No payment advice for this line yet.");
+      }
+      throw error;
+    }
+    const pdf = await invoicePdfForLine(db, id);
+    reply.header("content-type", "application/pdf");
+    reply.header("content-disposition", `attachment; filename="${pdf.filename}"`);
+    return reply.send(pdf.bytes);
+  });
+
+  app.post("/api/lines/:id/payout", async (request) => {
+    const actor = actorFromRequest(request, config);
+    const { id } = request.params as { id: string };
+    const attempt = await requestBankPayout(db, config, gateway, id, actor);
+    return { attempt };
+  });
+
+  app.post("/api/stripe/webhook", async (request) => {
+    const raw = (request as FastifyRequest & { rawBody?: string }).rawBody ?? "";
+    const signature = request.headers["stripe-signature"];
+    if (typeof signature !== "string") throw new HttpError(400, "Missing Stripe signature.");
+    const event = constructStripeEvent(config, raw, signature);
+    if (event.type.startsWith("payout.")) {
+      await applyPayoutEvent(db, event as Parameters<typeof applyPayoutEvent>[1]);
+    }
+    return { received: true };
   });
 
   app.get("/api/audit", async (request) => {

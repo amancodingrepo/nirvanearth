@@ -12,6 +12,7 @@ import {
 import { recordAudit } from "./audit.ts";
 import type { AppConfig } from "./config.ts";
 import { dec } from "./money-db.ts";
+import { ensureActiveRule, payloadFromConfig, readPayload, type RulePayload } from "./rules-store.ts";
 import type { ShopifyLineItem, ShopifyOrder } from "./types.ts";
 
 const PAID_STATUSES = new Set(["paid", "partially_paid", "partially_refunded", "refunded"]);
@@ -38,6 +39,18 @@ export async function ingestShopifyOrder(
     (order.shipping_lines ?? []).reduce((sum, line) => sum + Number(line.price ?? 0), 0),
   );
   const taxesIncluded = Boolean(order.taxes_included);
+  const activeRule = await ensureActiveRule(db, config);
+  const rules = readPayload(activeRule.payload, payloadFromConfig(config));
+  const ruledConfig: AppConfig = {
+    ...config,
+    commissionRate: rules.commissionRate,
+    returnWindowDays: rules.returnWindowDays,
+    ownProducts: {
+      tags: rules.platformOwnTags,
+      vendorNames: rules.platformOwnVendorNames,
+      productIds: config.ownProducts.productIds,
+    },
+  };
 
   await db.orderSnapshot.upsert({
     where: { shopifyOrderId },
@@ -70,12 +83,12 @@ export async function ingestShopifyOrder(
   for (const line of order.line_items ?? []) {
     const shopifyLineId = String(line.id);
     seenLineIds.push(shopifyLineId);
-    await upsertLine(db, config, order, line, shopifyOrderId, paidAt, taxesIncluded);
+    await upsertLine(db, ruledConfig, order, line, shopifyOrderId, paidAt, taxesIncluded, rules);
   }
 
   await syncRefunds(db, order, shopifyOrderId);
   await syncSyntheticAdjustments(db, order, shopifyOrderId);
-  await refreshLineQualification(db, config, shopifyOrderId, now);
+  await refreshLineQualification(db, ruledConfig, shopifyOrderId, now, rules);
 
   await recordAudit(db, "order.ingested", actorEmail, {
     shopifyOrderId,
@@ -94,6 +107,7 @@ async function upsertLine(
   shopifyOrderId: string,
   paidAt: Date,
   taxesIncluded: boolean,
+  rules: RulePayload,
 ): Promise<void> {
   const own = isPlatformOwn(
     { tags: line.product_tags, id: line.product_id },
@@ -120,7 +134,9 @@ async function upsertLine(
     vendorVat,
     vatRegistered,
     taxesIncluded,
-    commissionRate: config.commissionRate,
+    commissionRate: rules.commissionRate,
+    includeVendorVatInNet: rules.includeVendorVatInNet,
+    excludeDeliveryAllowanceFromCommissionBase: rules.excludeDeliveryAllowanceFromCommissionBase,
     shippingAmount: 0,
     deliveryAllowance: delivery.amount,
     deliveryAllocation: delivery.allocation,
@@ -351,7 +367,9 @@ export async function refreshLineQualification(
   config: AppConfig,
   shopifyOrderId: string | null,
   now: Date,
+  rules?: RulePayload,
 ): Promise<void> {
+  const payload = rules ?? readPayload((await ensureActiveRule(db, config)).payload, payloadFromConfig(config));
   const lines = await db.orderLine.findMany({
     where: shopifyOrderId ? { shopifyOrderId } : undefined,
     include: { adjustments: true, vendor: true, order: true },
@@ -379,7 +397,9 @@ export async function refreshLineQualification(
       vendorVat,
       vatRegistered,
       taxesIncluded: line.taxesIncluded,
-      commissionRate: config.commissionRate,
+      commissionRate: payload.commissionRate,
+      includeVendorVatInNet: payload.includeVendorVatInNet,
+      excludeDeliveryAllowanceFromCommissionBase: payload.excludeDeliveryAllowanceFromCommissionBase,
       isPlatformOwn: line.isPlatformOwn,
       resolvedAdjustment: resolved,
       deliveryAllowance: delivery.amount,
@@ -390,7 +410,9 @@ export async function refreshLineQualification(
       isPlatformOwn: line.isPlatformOwn,
       vendorId: line.vendorId,
       fulfilledAt: line.fulfilledAt,
-      returnWindowEndsAt: line.returnWindowEndsAt,
+      returnWindowEndsAt: line.fulfilledAt
+        ? returnWindowEndsAt(line.fulfilledAt, payload.returnWindowDays)
+        : line.returnWindowEndsAt,
       hasOpenAdjustment: line.adjustments.some((item) => item.status === "open"),
       now,
       cancelled: Boolean(raw.cancelled_at) || financialStatus === "voided",
@@ -406,6 +428,9 @@ export async function refreshLineQualification(
         vendorNet: dec(money.vendorNet),
         deliveryAllowance: dec(money.deliveryAllowance),
         deliveryAllocation: money.deliveryAllocation,
+        returnWindowEndsAt: line.fulfilledAt
+          ? returnWindowEndsAt(line.fulfilledAt, payload.returnWindowDays)
+          : line.returnWindowEndsAt,
         status: qualification.status,
         blockReason: qualification.qualified ? null : qualification.reason,
       },

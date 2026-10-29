@@ -3,6 +3,7 @@ import { formatAed, toFils } from "@nirvan/rules";
 import { assertApprover, type AppConfig, HttpError } from "./config.ts";
 import { notify, type Mailer } from "./mailer.ts";
 import { money } from "./money-db.ts";
+import { ensureSettlementInvoice } from "./invoice.ts";
 import { getPack } from "./pack.ts";
 import type { TransferGateway } from "./types.ts";
 
@@ -39,6 +40,9 @@ export async function executePack(
   for (const line of pack.lines) {
     if (line.kind !== "payable") continue;
     if (line.status === "transferred" || line.stripeTransferId) {
+      if (line.stripeTransferId) {
+        await ensureSettlementInvoice(db, config, mailer, { lineId: line.id, actorEmail });
+      }
       results.push({
         lineId: line.id,
         vendorName: line.vendor.name,
@@ -75,6 +79,7 @@ export async function executePack(
         where: { id: line.id },
         data: { status: "transferred", stripeTransferId: existing.stripeTransferId },
       });
+      await ensureSettlementInvoice(db, config, mailer, { lineId: line.id, actorEmail });
       results.push({
         lineId: line.id,
         vendorName: line.vendor.name,
@@ -158,6 +163,11 @@ export async function executePack(
       await db.settlementLine.update({
         where: { id: line.id },
         data: { status: "transferred", stripeTransferId: transfer.id },
+      });
+      await ensureSettlementInvoice(db, config, mailer, {
+        lineId: line.id,
+        actorEmail,
+        transferredAt: new Date(),
       });
       await notify(db, config, mailer, {
         action: "transfer.executed",

@@ -25,6 +25,10 @@ export interface CommissionInput {
   /** Non-VAT vendors have no VAT line. Default true so an explicit VAT amount is kept. */
   vatRegistered?: boolean;
   commissionRate?: number;
+  /** When false, vendor VAT is shown but not added to vendor net. Default true. */
+  includeVendorVatInNet?: boolean;
+  /** When false, the included allowance stays inside the commission base. Default true. */
+  excludeDeliveryAllowanceFromCommissionBase?: boolean;
   /**
    * Separate Shopify shipping line. Recorded only.
    * Never part of the commission base. Added to vendor entitlement only when allocation is `vendor`.
@@ -102,19 +106,22 @@ export function calculateCommission(input: CommissionInput): CommissionResult {
   }
 
   const productNetExVat = roundMoney(productSellingAfterDiscount - vatInsidePrice);
-  const commissionBase = roundMoney(productNetExVat - deliveryAllowance);
+  const excludeDelivery = input.excludeDeliveryAllowanceFromCommissionBase !== false;
+  const includeVat = input.includeVendorVatInNet !== false;
+  const allowanceOut = excludeDelivery ? deliveryAllowance : 0;
+  const commissionBase = roundMoney(productNetExVat - allowanceOut);
   if (commissionBase < 0) {
     throw new Error("Delivery allowance exceeds the discounted product value excluding VAT.");
   }
   const rate = input.commissionRate ?? DEFAULT_COMMISSION_RATE;
   const commissionAmount = roundMoney(commissionBase * rate);
-  const deliveryToVendor = deliveryAllocation === "vendor" ? deliveryAllowance : 0;
+  const deliveryToVendor = excludeDelivery && deliveryAllocation === "vendor" ? deliveryAllowance : 0;
   const shippingToVendor = shippingAllocation === "vendor" ? shippingAmount : 0;
   const vendorNet = roundMoney(
     commissionBase -
       commissionAmount -
       roundMoney(input.resolvedAdjustment ?? 0) +
-      displayedVat +
+      (includeVat ? displayedVat : 0) +
       deliveryToVendor +
       shippingToVendor,
   );

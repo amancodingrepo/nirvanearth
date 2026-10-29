@@ -20,6 +20,8 @@ export async function disconnectDb(): Promise<void> {
 export async function resetDatabase(db: PrismaClient): Promise<void> {
   await db.$executeRawUnsafe(`
     TRUNCATE TABLE
+      "bank_payout_attempts",
+      "settlement_invoices",
       "transfer_attempts",
       "email_messages",
       "approvals",
@@ -27,6 +29,7 @@ export async function resetDatabase(db: PrismaClient): Promise<void> {
       "order_lines",
       "settlement_lines",
       "month_packs",
+      "settlement_rule_versions",
       "adjustments",
       "order_snapshots",
       "vendors",

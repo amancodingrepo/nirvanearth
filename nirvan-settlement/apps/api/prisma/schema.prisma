@@ -28,6 +28,7 @@ model Vendor {
   createdAt         DateTime @default(now()) @map("created_at")
   lines             OrderLine[]
   settlementLines   SettlementLine[]
+  invoices          SettlementInvoice[]
 
   @@map("vendors")
 }
@@ -108,12 +109,16 @@ model Adjustment {
 }
 
 model MonthPack {
-  id        String   @id @default(cuid())
-  yearMonth String   @unique @map("year_month")
-  status    String
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
-  lines     SettlementLine[]
+  id            String   @id @default(cuid())
+  yearMonth     String   @unique @map("year_month")
+  status        String
+  /// Frozen at generate time. Null only for packs created before rule versions existed.
+  ruleVersionId String?  @map("rule_version_id")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+  lines         SettlementLine[]
+  invoices      SettlementInvoice[]
+  ruleVersion   SettlementRuleVersion? @relation(fields: [ruleVersionId], references: [id])
 
   @@map("month_packs")
 }
@@ -135,6 +140,8 @@ model SettlementLine {
   vendor             Vendor   @relation(fields: [vendorId], references: [id])
   orderLines         OrderLine[]
   attempts           TransferAttempt[]
+  invoice            SettlementInvoice?
+  payouts            BankPayoutAttempt[]
 
   @@unique([monthPackId, vendorId, kind])
   @@index([monthPackId])
@@ -185,6 +192,55 @@ model EmailMessage {
   createdAt DateTime @default(now()) @map("created_at")
 
   @@map("email_messages")
+}
+
+model SettlementInvoice {
+  id               String   @id @default(cuid())
+  number           String   @unique
+  settlementLineId String   @unique @map("settlement_line_id")
+  monthPackId      String   @map("month_pack_id")
+  vendorId         String   @map("vendor_id")
+  amount           Decimal  @db.Decimal(12, 2)
+  currency         String   @default("AED")
+  stripeTransferId String   @map("stripe_transfer_id")
+  transferredAt    DateTime @map("transferred_at")
+  createdAt        DateTime @default(now()) @map("created_at")
+  line             SettlementLine @relation(fields: [settlementLineId], references: [id])
+  pack             MonthPack @relation(fields: [monthPackId], references: [id])
+  vendor           Vendor @relation(fields: [vendorId], references: [id])
+
+  @@map("settlement_invoices")
+}
+
+model SettlementRuleVersion {
+  id          String    @id @default(cuid())
+  versionLabel String   @map("version_label")
+  payload     Json
+  status      String
+  createdBy   String    @map("created_by")
+  approvedBy  String?   @map("approved_by")
+  approvedAt  DateTime? @map("approved_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  packs       MonthPack[]
+
+  @@index([status])
+  @@map("settlement_rule_versions")
+}
+
+model BankPayoutAttempt {
+  id                String    @id @default(cuid())
+  settlementLineId  String    @map("settlement_line_id")
+  transferId        String    @map("transfer_id")
+  stripePayoutId    String?   @unique @map("stripe_payout_id")
+  status            String
+  arrivalDate       DateTime? @map("arrival_date")
+  failureCode       String?   @map("failure_code")
+  idempotencyKey    String    @unique @map("idempotency_key")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  line              SettlementLine @relation(fields: [settlementLineId], references: [id])
+
+  @@index([settlementLineId])
+  @@map("bank_payout_attempts")
 }
 
 model ShopSession {

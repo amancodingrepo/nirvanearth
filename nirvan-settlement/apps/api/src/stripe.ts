@@ -1,7 +1,7 @@
 import type { PrismaClient } from "@prisma/client";
 import Stripe from "stripe";
-import type { AppConfig } from "./config.ts";
-import type { TransferGateway, TransferRequest } from "./types.ts";
+import { HttpError, type AppConfig } from "./config.ts";
+import type { PayoutRequest, TransferGateway, TransferRequest } from "./types.ts";
 
 export function createStripeGateway(config: AppConfig): TransferGateway {
   if (!config.stripeSecretKey) {
@@ -31,6 +31,22 @@ export function createStripeGateway(config: AppConfig): TransferGateway {
       );
       return { id: transfer.id };
     },
+    async createPayout(input: PayoutRequest) {
+      const payout = await stripe.payouts.create(
+        {
+          amount: input.amountFils,
+          currency: input.currency,
+          metadata: input.metadata,
+        },
+        { stripeAccount: input.stripeAccountId, idempotencyKey: input.idempotencyKey },
+      );
+      return {
+        id: payout.id,
+        status: payout.status,
+        arrivalDate: payout.arrival_date ? new Date(payout.arrival_date * 1000).toISOString() : null,
+        failureCode: payout.failure_code,
+      };
+    },
   };
 }
 
@@ -43,6 +59,11 @@ export class SimulatedGateway implements TransferGateway {
 
   async availableAed(): Promise<number | null> {
     return this.balance;
+  }
+
+  async createPayout(input: PayoutRequest) {
+    const arrival = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString();
+    return { id: `po_sim_${input.idempotencyKey.replace(/[^a-zA-Z0-9]/g, "").slice(-16)}`, status: "pending", arrivalDate: arrival };
   }
 
   async createTransfer(input: TransferRequest): Promise<{ id: string }> {
@@ -58,6 +79,17 @@ export class SimulatedGateway implements TransferGateway {
     this.balance = Math.round((this.balance - input.amountFils / 100) * 100) / 100;
     return result;
   }
+}
+
+export function constructStripeEvent(config: AppConfig, raw: string, signature: string) {
+  if (!config.stripeWebhookSecret) {
+    throw new HttpError(503, "Stripe webhook secret is not configured.");
+  }
+  if (!config.stripeSecretKey.startsWith("sk_test_") && !config.stripeSecretKey.startsWith("rk_test_")) {
+    throw new HttpError(400, "Stripe webhooks are verified only with a test key.");
+  }
+  const stripe = new Stripe(config.stripeSecretKey);
+  return stripe.webhooks.constructEvent(raw, signature, config.stripeWebhookSecret);
 }
 
 export async function pingStripe(config: AppConfig): Promise<{ mode: string; availableAed: number | null }> {

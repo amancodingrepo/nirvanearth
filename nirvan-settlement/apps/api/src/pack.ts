@@ -3,6 +3,7 @@ import { dubaiYearMonth, formatAed, isYearMonth } from "@nirvan/rules";
 import { recordAudit } from "./audit.ts";
 import { assertApprover, type AppConfig, HttpError } from "./config.ts";
 import { qualifyAll } from "./ingest.ts";
+import { ensureActiveRule } from "./rules-store.ts";
 import { notify, type Mailer } from "./mailer.ts";
 import { dec, money } from "./money-db.ts";
 
@@ -28,6 +29,7 @@ export async function generateMonthPack(
     await detachPack(db, existing.id);
   }
 
+  const rule = await ensureActiveRule(db, config);
   await qualifyAll(db, config, now);
 
   const lines = await db.orderLine.findMany({
@@ -46,8 +48,11 @@ export async function generateMonthPack(
   const pack =
     existing ??
     (await db.monthPack.create({
-      data: { yearMonth, status: "draft" },
+      data: { yearMonth, status: "draft", ruleVersionId: rule.id },
     }));
+  if (existing) {
+    await db.monthPack.update({ where: { id: pack.id }, data: { ruleVersionId: rule.id } });
+  }
 
   const payable = [...inMonth.filter((line) => line.status === "qualified"), ...rolled];
   const held = inMonth.filter((line) => line.status !== "qualified");
@@ -123,7 +128,11 @@ export async function getPack(db: PrismaClient, packId: string) {
   const pack = await db.monthPack.findUnique({
     where: { id: packId },
     include: {
-      lines: { include: { vendor: true, orderLines: true }, orderBy: { vendor: { name: "asc" } } },
+      ruleVersion: true,
+      lines: {
+        include: { vendor: true, orderLines: true, invoice: true, payouts: { orderBy: { createdAt: "desc" } } },
+        orderBy: { vendor: { name: "asc" } },
+      },
     },
   });
   if (!pack) throw new HttpError(404, "Pack not found.");

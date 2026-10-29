@@ -407,6 +407,34 @@ describe("cancel and unpaid qualification", () => {
   });
 });
 
+describe("rule flags", () => {
+  it("can leave vendor VAT out of the net", () => {
+    const result = calculateCommission({
+      gross: 105,
+      discount: 0,
+      vendorVat: 5,
+      taxesIncluded: true,
+      includeVendorVatInNet: false,
+    });
+    assert.equal(result.commissionBase, 100);
+    assert.equal(result.commissionAmount, 20);
+    assert.equal(result.vendorVat, 5);
+    assert.equal(result.vendorNet, 80);
+  });
+
+  it("can keep an included delivery allowance inside the commission base", () => {
+    const result = calculateCommission({
+      gross: 100,
+      discount: 0,
+      deliveryAllowance: 20,
+      excludeDeliveryAllowanceFromCommissionBase: false,
+    });
+    assert.equal(result.commissionBase, 100);
+    assert.equal(result.commissionAmount, 20);
+    assert.equal(result.vendorNet, 80);
+  });
+});
+
 describe("Dubai month", () => {
   it("rolls the UTC evening of the 30th into the next Dubai month", () => {
     assert.equal(dubaiYearMonth(new Date("2026-09-30T22:00:00.000Z")), "2026-10");
