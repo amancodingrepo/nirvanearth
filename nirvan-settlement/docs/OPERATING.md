@@ -18,11 +18,13 @@ Do not change the Shopify gateway or the Stripe payout schedule.
 
 ## Invoices
 
-A successful Stripe transfer creates a payment advice. Download it from the pack line, or `GET /api/lines/<settlementLineId>/invoice`. The advice number looks like `NE-SA-2026-10-desert-001`. The app emails admin@nirvanearth.com and, when the vendor row has an email, that vendor. With no `RESEND_API_KEY` the messages stay in the outbox. Stripe and Connect fees are not deducted from the net.
+A successful Stripe transfer creates a payment advice. Download it from the pack line, or `GET /api/lines/<settlementLineId>/invoice`. The advice number looks like `NE-SA-2026-10-desert-001`. The app emails that advice to admin@nirvanearth.com only. Vendor addresses are stored as blocked and are not sent. With no `RESEND_API_KEY` the admin messages stay in the outbox and `provider_message_id` is empty. A Resend accept stores the `re_` id on the email row and on the audit event. Stripe and Connect fees are not deducted from the net.
 
 ## Rules
 
-Open Rules in the admin UI. Save a draft, submit it, then approve it as admin@nirvanearth.com. The active version is stored on the pack when that pack is generated. Regenerating a pack that is still draft picks up the active version. A closed pack cannot be regenerated, and packed lines are not recalculated, so its commission stays as stored. The first active version is seeded from the current env defaults as `2026-10-28`. Editing the active row in place is rejected; save a new draft instead.
+Open Rules in the admin UI. Save a draft, submit it, then approve it as admin@nirvanearth.com. The active version is stored on the pack when that pack is generated. Regenerating a pack that is still draft picks up the active version. A closed pack cannot be regenerated. The first active version is seeded from the current env defaults as `2026-10-28`. Editing the active row in place is rejected; save a new draft instead.
+
+Requalify (`POST /api/requalify`, or the Requalify button on Orders) recalculates open and packed lines under the active rules, including VAT added back into vendor net. A line that already has a Stripe transfer keeps the paid settlement amount and the transfer id. The order row shows the rule net. The pack row shows that rule net and, when they differ, the amount already paid. The difference is written to the audit as `line.requalify.transferred_unchanged`. Requalify does not start a second transfer. Execute remains idempotent: a transferred line is skipped.
 
 ## Own-product report
 

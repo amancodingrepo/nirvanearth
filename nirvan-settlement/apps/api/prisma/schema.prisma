@@ -184,12 +184,13 @@ model TransferAttempt {
 }
 
 model EmailMessage {
-  id        String   @id @default(cuid())
-  toEmail   String   @map("to_email")
-  subject   String
-  body      String
-  delivery  String
-  createdAt DateTime @default(now()) @map("created_at")
+  id                String   @id @default(cuid())
+  toEmail           String   @map("to_email")
+  subject           String
+  body              String
+  delivery          String
+  providerMessageId String?  @map("provider_message_id")
+  createdAt         DateTime @default(now()) @map("created_at")
 
   @@map("email_messages")
 }

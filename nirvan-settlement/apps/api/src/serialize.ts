@@ -83,10 +83,15 @@ export function presentPack(pack: {
     vendor: { name: string; email: string | null; vatRegistered: boolean; stripeAccountId: string | null };
     invoice?: { id: string; number: string } | null;
     payouts?: Array<{ status: string }>;
+    orderLines?: Array<{ vendorNet: Decimalish }>;
   }>;
 }) {
   const payable = pack.lines.filter((line) => line.kind === "payable");
   const held = pack.lines.filter((line) => line.kind === "held");
+  const ruleNet = (line: { vendorNetSum: Decimalish; orderLines?: Array<{ vendorNet: Decimalish }> }) =>
+    line.orderLines && line.orderLines.length > 0
+      ? line.orderLines.reduce((sum, item) => sum + money(item.vendorNet), 0)
+      : money(line.vendorNetSum);
   return {
     id: pack.id,
     yearMonth: pack.yearMonth,
@@ -94,6 +99,7 @@ export function presentPack(pack: {
     createdAt: pack.createdAt,
     ruleVersionLabel: pack.ruleVersion?.versionLabel ?? null,
     payableTotal: payable.reduce((sum, line) => sum + money(line.vendorNetSum), 0),
+    rulePayableTotal: payable.reduce((sum, line) => sum + ruleNet(line), 0),
     commissionTotal: payable.reduce((sum, line) => sum + money(line.commissionSum), 0),
     heldTotal: held.reduce((sum, line) => sum + money(line.vendorNetSum), 0),
     lines: pack.lines.map((line) => ({
@@ -107,6 +113,7 @@ export function presentPack(pack: {
       commissionBaseSum: money(line.commissionBaseSum),
       commissionSum: money(line.commissionSum),
       vendorNetSum: money(line.vendorNetSum),
+      ruleNetSum: ruleNet(line),
       shippingSum: money(line.shippingSum),
       orderLineCount: line.orderLineCount,
       feeNotes: line.feeNotes,

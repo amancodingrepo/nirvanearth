@@ -294,7 +294,7 @@ async function renderPack(me) {
       </div>
     </div>
     <div class="metrics">
-      <div class="metric"><div class="label">Vendor net payable</div><div class="value">${aed(pack.payableTotal)}</div></div>
+      <div class="metric"><div class="label">Vendor net payable</div><div class="value">${aed(pack.rulePayableTotal ?? pack.payableTotal)}</div>${Math.abs((pack.rulePayableTotal ?? pack.payableTotal) - pack.payableTotal) > 0.001 ? `<div class="muted">Transferred ${aed(pack.payableTotal)}</div>` : ""}</div>
       <div class="metric"><div class="label">Commission 20%</div><div class="value">${aed(pack.commissionTotal)}</div></div>
       <div class="metric"><div class="label">Held, not payable</div><div class="value">${aed(pack.heldTotal)}</div></div>
       <div class="metric"><div class="label">Vendors in pack</div><div class="value">${pack.lines.length}</div></div>
@@ -370,7 +370,7 @@ function settlementTable(lines, payoutsEnabled) {
               <td class="num">${aed(line.commissionBaseSum)}</td>
               <td class="num">${aed(line.commissionSum)}</td>
               <td class="num">${aed(line.shippingSum)}</td>
-              <td class="num">${aed(line.vendorNetSum)}</td>
+              <td class="num">${aed(line.ruleNetSum ?? line.vendorNetSum)}${line.ruleNetSum != null && Math.abs(line.ruleNetSum - line.vendorNetSum) > 0.001 ? `<div class="muted">Paid ${aed(line.vendorNetSum)}</div>` : ""}</td>
               <td>${badge(line.status)}${line.bankPayoutStatus ? `<div class="muted">${esc(line.bankPayoutStatus)}</div>` : ""}</td>
               <td>${line.stripeTransferId ? esc(line.stripeTransferId) : "—"}${line.invoiceNumber ? `<div><a href="/api/lines/${esc(line.id)}/invoice">Download statement</a></div>` : ""}${payoutsEnabled && line.status === "transferred" ? `<div><button type="button" data-payout="${esc(line.id)}">Request bank payout</button></div>` : ""}</td>
             </tr>
@@ -410,13 +410,13 @@ async function renderOrders(me) {
           <thead>
             <tr>
               <th>Order</th><th>Product</th><th class="num">Qty</th><th>Seller</th>
-              <th class="num">Gross</th><th class="num">Discount</th><th class="num">VAT</th>
+              <th class="num">Gross</th><th class="num">Discount</th><th class="num">VAT</th><th class="num">Allowance</th>
               <th>Own</th><th class="num">Shipping</th><th class="num">Base</th><th class="num">20%</th>
               <th class="num">Net</th><th>Fulfilled</th><th>Return window</th><th>Status</th>
             </tr>
           </thead>
           <tbody id="order-rows">
-            ${lines.map((line) => orderRow(line)).join("") || `<tr><td colspan="15"><div class="empty">No lines yet. Sync needs a Shopify Admin API token.</div></td></tr>`}
+            ${lines.map((line) => orderRow(line)).join("") || `<tr><td colspan="16"><div class="empty">No lines yet. Sync needs a Shopify Admin API token.</div></td></tr>`}
           </tbody>
         </table>
       </div>
@@ -452,8 +452,11 @@ async function renderOrders(me) {
   });
   app.querySelector("#qualify").addEventListener("click", async () => {
     try {
-      const result = await api("/api/qualify", { method: "POST" });
-      say({ message: `${result.qualified} lines qualified.` });
+      const result = await api("/api/requalify", { method: "POST" });
+      const held = result.transferredUnchanged?.length
+        ? ` ${result.transferredUnchanged.length} transferred line(s) kept the paid amount.`
+        : "";
+      say({ message: `Requalified ${result.updated} line(s).${held}` });
       await render();
     } catch (error) { say(error); }
   });
@@ -470,6 +473,7 @@ function orderRow(line) {
       <td class="num">${aed(line.gross)}</td>
       <td class="num">${aed(line.discount)}</td>
       <td class="num">${line.vatRegistered ? aed(line.vendorVat) : "—"}</td>
+      <td class="num">${aed(line.deliveryAllowance || 0)} <span class="muted">${esc(line.deliveryAllocation || "unassigned")}</span></td>
       <td>${line.isPlatformOwn ? badge("own") : `<span class="muted">No</span>`}</td>
       <td class="num">${aed(line.orderShippingTotal)} <span class="muted">${esc(line.shippingAllocation)}</span></td>
       <td class="num">${aed(line.commissionBase)}</td>

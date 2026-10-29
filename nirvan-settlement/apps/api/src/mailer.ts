@@ -83,6 +83,7 @@ export async function notify(
         subject: input.subject,
         body: input.text,
         delivery,
+        providerMessageId: null,
       },
     });
     await recordAudit(db, "email.blocked", input.actorEmail, {
@@ -109,6 +110,7 @@ export async function notify(
         subject: input.subject,
         body: input.text,
         delivery,
+        providerMessageId: null,
       },
     });
     await recordAudit(db, "email.failed", input.actorEmail, {
@@ -124,6 +126,7 @@ export async function notify(
       subject: input.subject,
       body: input.text,
       delivery,
+      providerMessageId,
     },
   });
   await recordAudit(db, input.action, input.actorEmail, {

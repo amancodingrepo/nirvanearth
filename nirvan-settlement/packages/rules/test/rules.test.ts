@@ -29,6 +29,73 @@ const ownConfig = {
   productIds: ["gid://shopify/Product/123"],
 };
 
+describe("locked client entitlement", () => {
+  it("VAT vendor: base 100, VAT 5, commission 20, net 85", () => {
+    const result = calculateCommission({
+      gross: 105,
+      discount: 0,
+      vendorVat: 5,
+      taxesIncluded: true,
+      vatRegistered: true,
+    });
+    assert.equal(result.commissionBase, 100);
+    assert.equal(result.vendorVat, 5);
+    assert.equal(result.commissionAmount, 20);
+    assert.equal(result.vendorNet, 85);
+  });
+
+  it("non-VAT vendor: base 80, commission 16, net 64, VAT ignored", () => {
+    const result = calculateCommission({
+      gross: 80,
+      discount: 0,
+      vendorVat: 5,
+      vatRegistered: false,
+    });
+    assert.equal(result.vendorVat, 0);
+    assert.equal(result.commissionBase, 80);
+    assert.equal(result.commissionAmount, 16);
+    assert.equal(result.vendorNet, 64);
+  });
+
+  it("mixed cart keeps both entitlements", () => {
+    const vat = calculateCommission({
+      gross: 105,
+      discount: 0,
+      vendorVat: 5,
+      taxesIncluded: true,
+      vatRegistered: true,
+    });
+    const plain = calculateCommission({
+      gross: 80,
+      discount: 0,
+      vendorVat: 5,
+      vatRegistered: false,
+    });
+    const own = calculateCommission({ gross: 180, discount: 0, isPlatformOwn: true });
+    assert.equal(vat.vendorNet, 85);
+    assert.equal(plain.vendorNet, 64);
+    assert.equal(own.vendorNet, 0);
+    assert.equal(roundMoney(vat.commissionAmount + plain.commissionAmount), 36);
+  });
+
+  it("excludes a non-zero included delivery allowance from the commission base", () => {
+    const result = calculateCommission({
+      gross: 115,
+      discount: 0,
+      vendorVat: 5,
+      taxesIncluded: true,
+      vatRegistered: true,
+      deliveryAllowance: 10,
+      deliveryAllocation: "unassigned",
+    });
+    assert.equal(result.productNetExVat, 110);
+    assert.equal(result.deliveryAllowance, 10);
+    assert.equal(result.commissionBase, 100);
+    assert.equal(result.commissionAmount, 20);
+    assert.equal(result.vendorNet, 85);
+  });
+});
+
 describe("commission", () => {
   it("takes 20% of 100 with no VAT", () => {
     const result = calculateCommission({ gross: 100, discount: 0, vendorVat: 0 });

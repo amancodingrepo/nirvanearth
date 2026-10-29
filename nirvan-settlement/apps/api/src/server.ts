@@ -8,7 +8,7 @@ import type { PrismaClient } from "@prisma/client";
 import { actorFromRequest, passwordsMatch, setSessionCookie } from "./auth.ts";
 import type { AppConfig } from "./config.ts";
 import { HttpError } from "./config.ts";
-import { enrichLines, ingestShopifyOrder, qualifyAll } from "./ingest.ts";
+import { enrichLines, ingestShopifyOrder, qualifyAll, requalifyLines } from "./ingest.ts";
 import { runSeedDemo } from "./seed-demo.ts";
 import { createMailer, type Mailer } from "./mailer.ts";
 import { approvePack, generateMonthPack, getPack, submitPack } from "./pack.ts";
@@ -140,6 +140,11 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       mode: gateway.mode,
       shop: config.shopifyShop,
       liveBlocked: !config.allowLive,
+      email: {
+        provider: config.resendApiKey ? "resend" : "outbox",
+        notifyEmail: config.notifyEmail,
+        fromConfigured: Boolean(config.emailFrom) && !config.emailFrom.endsWith("@localhost"),
+      },
     };
   });
 
@@ -315,6 +320,11 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     actorFromRequest(request, config);
     const qualified = await qualifyAll(db, config);
     return { qualified };
+  });
+
+  app.post("/api/requalify", async (request) => {
+    const actor = actorFromRequest(request, config);
+    return requalifyLines(db, config, actor);
   });
 
   app.get("/api/vendors", async (request) => {

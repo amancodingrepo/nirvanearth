@@ -4,7 +4,7 @@ import { createMailer } from "../src/mailer.ts";
 import { loadConfig, type AppConfig } from "../src/config.ts";
 import { disconnectDb, getDb, resetDatabase } from "../src/db.ts";
 import { executePack } from "../src/execute.ts";
-import { ingestShopifyOrder } from "../src/ingest.ts";
+import { ingestShopifyOrder, requalifyLines } from "../src/ingest.ts";
 import { money } from "../src/money-db.ts";
 import { approvePack, generateMonthPack, submitPack } from "../src/pack.ts";
 import { buildApp } from "../src/server.ts";
@@ -297,6 +297,48 @@ describe("settlement matrix", () => {
     assert.equal(line.stripeTransferId, null);
     const pack = await db.monthPack.findFirstOrThrow();
     assert.equal(pack.status, "executing");
+  });
+
+  it("requalify restores VAT net 85 and does not change a transferred amount", async () => {
+    await vendor("Desert Botanics", { vatRegistered: true, stripeAccountId: "acct_desert" });
+    await ingest(order({
+      id: 85,
+      paidAt: "2026-09-02T08:00:00.000Z",
+      fulfilledAt: "2026-09-02T12:00:00.000Z",
+      taxesIncluded: true,
+      lines: [{ id: 851, title: "Desert rose oil 30ml", price: 105, vat: 5, vendor: "Desert Botanics" }],
+    }));
+    const before = await db.orderLine.findFirstOrThrow();
+    assert.equal(money(before.vendorNet), 85);
+    const gateway = new SimulatedGateway();
+    const pack = await generateMonthPack(db, config, "2026-09", ACTOR, NOW);
+    const payable = pack.lines.find((item) => item.kind === "payable");
+    assert.ok(payable);
+    await db.orderLine.updateMany({ where: { settlementLineId: payable.id }, data: { vendorNet: 80 } });
+    await db.settlementLine.update({ where: { id: payable.id }, data: { vendorNetSum: 80 } });
+    await submitPack(db, config, createMailer(config), pack.id, ACTOR);
+    await approvePack(db, config, createMailer(config), pack.id, ACTOR, undefined, NOW);
+    const results = await executePack(db, config, createMailer(config), gateway, pack.id, ACTOR);
+    assert.equal(results[0]?.status, "transferred");
+    const paid = await db.settlementLine.findFirstOrThrow({ where: { kind: "payable" } });
+    assert.equal(money(paid.vendorNetSum), 80);
+    const requalified = await requalifyLines(db, config, ACTOR, NOW);
+    const line = await db.orderLine.findFirstOrThrow();
+    assert.equal(money(line.vendorNet), 85);
+    assert.equal(money(line.commissionBase), 100);
+    assert.equal(money(line.commissionAmount), 20);
+    assert.equal(money(line.vendorVat), 5);
+    assert.equal(line.status, "packed");
+    const stillPaid = await db.settlementLine.findFirstOrThrow({ where: { id: paid.id } });
+    assert.equal(money(stillPaid.vendorNetSum), 80);
+    assert.equal(stillPaid.stripeTransferId, results[0]?.transferId);
+    assert.equal(requalified.transferredUnchanged.length, 1);
+    assert.equal(requalified.transferredUnchanged[0]?.delta, 5);
+    await db.monthPack.update({ where: { id: paid.monthPackId }, data: { status: "approved" } });
+    const second = await executePack(db, config, createMailer(config), gateway, paid.monthPackId, ACTOR);
+    assert.equal(gateway.calls.length, 1);
+    assert.equal(second[0]?.status, "skipped");
+    assert.equal(second[0]?.transferId, results[0]?.transferId);
   });
 
   it("11 a second execute does not create a second transfer", async () => {

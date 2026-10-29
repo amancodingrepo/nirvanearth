@@ -64,28 +64,22 @@ export async function ensureSettlementInvoice(
     subject: `Payment advice ${number}`,
     text,
   });
-  if (line.vendor.email && line.vendor.email.toLowerCase() !== config.notifyEmail) {
-    await sendVendorCopy(db, config, mailer, line.vendor.email, `Payment advice ${number}`, text);
+  if (line.vendor.email && line.vendor.email.toLowerCase() !== "admin@nirvanearth.com") {
+    await db.emailMessage.create({
+      data: {
+        toEmail: line.vendor.email,
+        subject: `Payment advice ${number}`,
+        body: text,
+        delivery: "blocked",
+        providerMessageId: null,
+      },
+    });
+    await recordAudit(db, "email.blocked", input.actorEmail, {
+      subject: `Payment advice ${number}`,
+      reason: "vendor_copy_not_sent",
+    });
   }
   return { invoice, created: true };
-}
-
-async function sendVendorCopy(
-  db: PrismaClient,
-  config: AppConfig,
-  mailer: Mailer,
-  to: string,
-  subject: string,
-  text: string,
-) {
-  let delivery = "outbox";
-  try {
-    const sent = await mailer.send({ to, from: config.emailFrom, subject, text });
-    delivery = sent.id ? "sent" : "outbox";
-  } catch {
-    delivery = "failed";
-  }
-  await db.emailMessage.create({ data: { toEmail: to, subject, body: text, delivery } });
 }
 
 export async function invoicePdfForLine(db: PrismaClient, lineId: string): Promise<{ filename: string; bytes: Buffer }> {

@@ -120,6 +120,34 @@ export async function runSeedDemo(db: PrismaClient, config: AppConfig) {
         },
       ],
     },
+    {
+      id: 9004,
+      name: "#9004",
+      currency: "AED",
+      financial_status: "paid",
+      fulfillment_status: "fulfilled",
+      gateway: "shopify_payments",
+      processed_at: "2026-09-08T08:00:00.000Z",
+      taxes_included: true,
+      shipping_lines: [{ price: "12.00" }],
+      fulfillments: [{ created_at: "2026-09-08T12:00:00.000Z", line_items: [{ id: 5 }] }],
+      line_items: [
+        {
+          id: 5,
+          title: "Desert rose oil, delivery included",
+          quantity: 1,
+          price: "115.00",
+          vendor: "Desert Botanics",
+          product_id: 504,
+          tax_lines: [{ price: "5.00", title: "VAT" }],
+          properties: [
+            { name: "webkul_seller_id", value: "desert" },
+            { name: "included_delivery_allowance", value: "10" },
+            { name: "delivery_allocation", value: "unassigned" },
+          ],
+        },
+      ],
+    },
   ];
 
   let ordersUpserted = 0;

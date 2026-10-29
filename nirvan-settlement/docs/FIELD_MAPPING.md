@@ -28,7 +28,7 @@ Rules version `2026-10-28`. Shopify Admin order payload and Webkul values writte
 
 | Gap | What the API does not give | Test-mode default |
 |-----|----------------------------|-------------------|
-| Included delivery allowance | Shopify has no standard field for a delivery amount baked into the product price. | 0 and `unassigned` until a line property is set. Separate `shipping_lines` are not treated as this allowance. |
+| Included delivery allowance | Shopify has no standard field for a delivery amount baked into the product price. | 0 and `unassigned` until a line property is set. Separate `shipping_lines` are not treated as this allowance. Test order #9004 sets `included_delivery_allowance` = 10 and `delivery_allocation` = `unassigned` on a VAT line priced at 115. Commission base is 100. The allowance is not added to vendor net. |
 | Who keeps the allowance | No commercial flag in Shopify or Webkul. | `unassigned`. The amount is not commissioned and is not paid to the vendor. |
 | Webkul seller API | This app does not call Webkul. Seller id is whatever Webkul writes onto the Shopify line. | Match property, then `sellerKey::sku`, then vendor name. |
 | VAT registration | Shopify tax lines do not say the vendor is VAT-registered. | `vendors.vat_registered`. Unknown new vendors are non-VAT, so their tax is not a vendor VAT line. |

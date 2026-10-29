@@ -11,7 +11,7 @@ import {
 } from "@nirvan/rules";
 import { recordAudit } from "./audit.ts";
 import type { AppConfig } from "./config.ts";
-import { dec } from "./money-db.ts";
+import { dec, money as moneyOf } from "./money-db.ts";
 import { ensureActiveRule, payloadFromConfig, readPayload, type RulePayload } from "./rules-store.ts";
 import type { ShopifyLineItem, ShopifyOrder } from "./types.ts";
 
@@ -362,6 +362,62 @@ async function syncSyntheticAdjustments(
   }
 }
 
+type StoredLine = Prisma.OrderLineGetPayload<{
+  include: { adjustments: true; vendor: true; order: true; settlementLine: true };
+}>;
+
+function settlementWasTransferred(line: { status: string; stripeTransferId: string | null } | null): boolean {
+  if (!line) return false;
+  return line.status === "transferred" || Boolean(line.stripeTransferId);
+}
+
+function recalculateStoredLine(line: StoredLine, payload: RulePayload, now: Date) {
+  const resolved = roundMoney(
+    line.adjustments
+      .filter((item) => item.status === "resolved" && item.orderLineId === line.id)
+      .reduce((sum, item) => sum + Number(item.amount), 0),
+  );
+  const raw = line.order.rawJson as unknown as ShopifyOrder;
+  const rawLine = (raw.line_items ?? []).find((item) => String(item.id) === line.shopifyLineId);
+  const delivery = rawLine
+    ? parseDeliveryAllowance(rawLine)
+    : {
+        amount: Number(line.deliveryAllowance),
+        allocation: line.deliveryAllocation as DeliveryAllocation,
+        source: "default" as const,
+      };
+  const vatRegistered = Boolean(line.vendor?.vatRegistered);
+  const vendorVat = vatRegistered ? Number(line.taxAmount) : 0;
+  const money = calculateCommission({
+    gross: Number(line.gross),
+    discount: Number(line.discount),
+    vendorVat,
+    vatRegistered,
+    taxesIncluded: line.taxesIncluded,
+    commissionRate: payload.commissionRate,
+    includeVendorVatInNet: payload.includeVendorVatInNet,
+    excludeDeliveryAllowanceFromCommissionBase: payload.excludeDeliveryAllowanceFromCommissionBase,
+    isPlatformOwn: line.isPlatformOwn,
+    resolvedAdjustment: resolved,
+    deliveryAllowance: delivery.amount,
+    deliveryAllocation: delivery.allocation,
+  });
+  const financialStatus = raw.financial_status ?? line.order.financialStatus;
+  const qualification = qualifyLine({
+    isPlatformOwn: line.isPlatformOwn,
+    vendorId: line.vendorId,
+    fulfilledAt: line.fulfilledAt,
+    returnWindowEndsAt: line.fulfilledAt
+      ? returnWindowEndsAt(line.fulfilledAt, payload.returnWindowDays)
+      : line.returnWindowEndsAt,
+    hasOpenAdjustment: line.adjustments.some((item) => item.status === "open"),
+    now,
+    cancelled: Boolean(raw.cancelled_at) || financialStatus === "voided",
+    financialStatus,
+  });
+  return { money, qualification };
+}
+
 export async function refreshLineQualification(
   db: PrismaClient,
   config: AppConfig,
@@ -372,52 +428,12 @@ export async function refreshLineQualification(
   const payload = rules ?? readPayload((await ensureActiveRule(db, config)).payload, payloadFromConfig(config));
   const lines = await db.orderLine.findMany({
     where: shopifyOrderId ? { shopifyOrderId } : undefined,
-    include: { adjustments: true, vendor: true, order: true },
+    include: { adjustments: true, vendor: true, order: true, settlementLine: true },
   });
 
   for (const line of lines) {
     if (line.status === "packed") continue;
-    const resolved = roundMoney(
-      line.adjustments
-        .filter((item) => item.status === "resolved" && item.orderLineId === line.id)
-        .reduce((sum, item) => sum + Number(item.amount), 0),
-    );
-    const raw = line.order.rawJson as unknown as ShopifyOrder;
-    const rawLine = (raw.line_items ?? []).find((item) => String(item.id) === line.shopifyLineId);
-    const delivery = rawLine ? parseDeliveryAllowance(rawLine) : {
-      amount: Number(line.deliveryAllowance),
-      allocation: line.deliveryAllocation as DeliveryAllocation,
-      source: "default" as const,
-    };
-    const vatRegistered = Boolean(line.vendor?.vatRegistered);
-    const vendorVat = vatRegistered ? Number(line.taxAmount) : 0;
-    const money = calculateCommission({
-      gross: Number(line.gross),
-      discount: Number(line.discount),
-      vendorVat,
-      vatRegistered,
-      taxesIncluded: line.taxesIncluded,
-      commissionRate: payload.commissionRate,
-      includeVendorVatInNet: payload.includeVendorVatInNet,
-      excludeDeliveryAllowanceFromCommissionBase: payload.excludeDeliveryAllowanceFromCommissionBase,
-      isPlatformOwn: line.isPlatformOwn,
-      resolvedAdjustment: resolved,
-      deliveryAllowance: delivery.amount,
-      deliveryAllocation: delivery.allocation,
-    });
-    const financialStatus = raw.financial_status ?? line.order.financialStatus;
-    const qualification = qualifyLine({
-      isPlatformOwn: line.isPlatformOwn,
-      vendorId: line.vendorId,
-      fulfilledAt: line.fulfilledAt,
-      returnWindowEndsAt: line.fulfilledAt
-        ? returnWindowEndsAt(line.fulfilledAt, payload.returnWindowDays)
-        : line.returnWindowEndsAt,
-      hasOpenAdjustment: line.adjustments.some((item) => item.status === "open"),
-      now,
-      cancelled: Boolean(raw.cancelled_at) || financialStatus === "voided",
-      financialStatus,
-    });
+    const { money, qualification } = recalculateStoredLine(line, payload, now);
     await db.orderLine.update({
       where: { id: line.id },
       data: {
@@ -436,6 +452,103 @@ export async function refreshLineQualification(
       },
     });
   }
+}
+
+export interface RequalifyTransferredNote {
+  shopifyOrderId: string;
+  shopifyLineId: string;
+  title: string;
+  paidNet: number;
+  ruleNet: number;
+  delta: number;
+  stripeTransferId: string | null;
+}
+
+/**
+ * Recalculates line money under the active rules, including packed lines.
+ * A settlement line that already has a transfer keeps its paid amount.
+ * The order line still stores the rule net so the orders screen matches the lock.
+ */
+export async function requalifyLines(
+  db: PrismaClient,
+  config: AppConfig,
+  actorEmail: string,
+  now = new Date(),
+): Promise<{ updated: number; transferredUnchanged: RequalifyTransferredNote[] }> {
+  const payload = readPayload((await ensureActiveRule(db, config)).payload, payloadFromConfig(config));
+  const lines = await db.orderLine.findMany({
+    include: { adjustments: true, vendor: true, order: true, settlementLine: true },
+  });
+  const transferredUnchanged: RequalifyTransferredNote[] = [];
+  let updated = 0;
+
+  for (const line of lines) {
+    const { money, qualification } = recalculateStoredLine(line, payload, now);
+    const transferred = settlementWasTransferred(line.settlementLine);
+    const previousNet = moneyOf(line.vendorNet);
+    const ruleNet = money.vendorNet;
+    const paidNet = line.settlementLine ? moneyOf(line.settlementLine.vendorNetSum) : previousNet;
+    const keepPacked = line.status === "packed" || transferred;
+
+    await db.orderLine.update({
+      where: { id: line.id },
+      data: {
+        productNet: dec(money.productNetExVat),
+        vendorVat: dec(money.vendorVat),
+        commissionBase: dec(money.commissionBase),
+        commissionAmount: dec(money.commissionAmount),
+        vendorNet: dec(ruleNet),
+        deliveryAllowance: dec(money.deliveryAllowance),
+        deliveryAllocation: money.deliveryAllocation,
+        returnWindowEndsAt: line.fulfilledAt
+          ? returnWindowEndsAt(line.fulfilledAt, payload.returnWindowDays)
+          : line.returnWindowEndsAt,
+        status: keepPacked ? "packed" : qualification.status,
+        blockReason: keepPacked ? null : qualification.qualified ? null : qualification.reason,
+      },
+    });
+
+    if (Math.abs(previousNet - ruleNet) > 0.001) updated += 1;
+
+    if (transferred && Math.abs(paidNet - ruleNet) > 0.001) {
+      const note: RequalifyTransferredNote = {
+        shopifyOrderId: line.shopifyOrderId,
+        shopifyLineId: line.shopifyLineId,
+        title: line.title,
+        paidNet,
+        ruleNet,
+        delta: roundMoney(ruleNet - paidNet),
+        stripeTransferId: line.settlementLine?.stripeTransferId ?? null,
+      };
+      transferredUnchanged.push(note);
+      await recordAudit(db, "line.requalify.transferred_unchanged", actorEmail, note);
+    }
+  }
+
+  const settlements = await db.settlementLine.findMany({
+    where: { stripeTransferId: null, NOT: { status: "transferred" } },
+    include: { orderLines: true },
+  });
+  for (const settlement of settlements) {
+    if (settlement.orderLines.length === 0) continue;
+    await db.settlementLine.update({
+      where: { id: settlement.id },
+      data: {
+        commissionBaseSum: dec(settlement.orderLines.reduce((sum, item) => sum + moneyOf(item.commissionBase), 0)),
+        commissionSum: dec(settlement.orderLines.reduce((sum, item) => sum + moneyOf(item.commissionAmount), 0)),
+        vendorNetSum: dec(settlement.orderLines.reduce((sum, item) => sum + moneyOf(item.vendorNet), 0)),
+        shippingSum: dec(settlement.orderLines.reduce((sum, item) => sum + moneyOf(item.shippingAmount), 0)),
+        orderLineCount: settlement.orderLines.length,
+      },
+    });
+  }
+
+  await recordAudit(db, "lines.requalified", actorEmail, {
+    rulesVersion: payload.rulesVersion,
+    updated,
+    transferredUnchanged: transferredUnchanged.length,
+  });
+  return { updated, transferredUnchanged };
 }
 
 export async function qualifyAll(db: PrismaClient, config: AppConfig, now = new Date()): Promise<number> {
