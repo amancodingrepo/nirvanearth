@@ -19,7 +19,7 @@ export async function runSeedDemo(db: PrismaClient, config: AppConfig) {
       stripeAccountId: "acct_test_desert",
       tradeLicenceRef: "TL-TEST-DESERT",
     },
-    update: { vatRegistered: true, stripeAccountId: "acct_test_desert", webkulSellerId: "desert" },
+    update: { vatRegistered: true, webkulSellerId: "desert" },
   });
 
   await db.vendor.upsert({
@@ -33,7 +33,7 @@ export async function runSeedDemo(db: PrismaClient, config: AppConfig) {
       stripeAccountId: "acct_test_honey",
       tradeLicenceRef: "TL-TEST-HONEY",
     },
-    update: { vatRegistered: false, stripeAccountId: "acct_test_honey", webkulSellerId: "honey" },
+    update: { vatRegistered: false, webkulSellerId: "honey" },
   });
 
   const orders: ShopifyOrder[] = [
