@@ -66,11 +66,11 @@ function route() {
 
 function badge(status) {
   const key = String(status || "open");
-  const tone = ["qualified", "approved", "transferred", "closed", "active", "manual_paid"].includes(key)
+  const tone = ["qualified", "approved", "transferred", "closed", "active", "manual_paid", "vat", "ready"].includes(key)
     ? "success"
-    : ["blocked", "failed", "held"].includes(key)
+    : ["blocked", "failed", "held", "missing"].includes(key)
       ? "critical"
-      : ["pending_approval", "executing", "draft", "open", "packed", "awaiting_manual_payment"].includes(key)
+      : ["pending_approval", "executing", "draft", "open", "packed", "awaiting_manual_payment", "manual_bank"].includes(key)
         ? "warning"
         : "info";
   return `<span class="badge ${tone}">${esc(key.replaceAll("_", " "))}</span>`;
@@ -493,125 +493,173 @@ function orderRow(line) {
   `;
 }
 
+function vendorPayoutReady(vendor) {
+  if (vendor.payoutMethod === "manual_bank") {
+    return Boolean((vendor.bankLabel || "").trim() && /^\d{4}$/.test(vendor.bankLast4 || ""));
+  }
+  return Boolean(vendor.stripeAccountId && String(vendor.stripeAccountId).startsWith("acct_"));
+}
+
+function adviceRows(vendors) {
+  return vendors.flatMap((vendor) => (vendor.invoices || []).map((invoice) => `<tr>
+    <td>${esc(vendor.name)}</td>
+    <td>${esc(invoice.number)}</td>
+    <td class="num">${aed(invoice.amount)}</td>
+    <td><a href="/api/lines/${esc(invoice.settlementLineId)}/invoice">Download statement</a></td>
+  </tr>`)).join("");
+}
+
 async function renderVendors(me) {
   const [{ vendors }, dash] = await Promise.all([api("/api/vendors"), api("/api/dashboard")]);
+  const advice = route().id === "advice";
   app.innerHTML = shell(me, dash, `
     <div class="page-head">
       <div>
         <h1>Vendors</h1>
-        <p class="page-sub">Sellers do not log in here. New Webkul sellers are created on sync as non-VAT Stripe Connect until you set VAT or manual bank.</p>
+        <p class="page-sub">New Webkul sellers are created on sync as non-VAT Stripe Connect. Set VAT and payout before the first pack. A full IBAN is not stored.</p>
       </div>
+      ${advice ? "" : `<button class="primary" id="add-vendor" type="button">Add vendor</button>`}
     </div>
-    <section class="card">
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr><th>Name</th><th>Webkul id</th><th>Payout</th><th>Email</th><th>Active</th><th>VAT</th><th>Stripe account</th><th>Bank label</th><th>Last 4</th><th></th></tr>
-          </thead>
-          <tbody>
-            ${vendors.map((vendor) => `
-              <tr data-id="${esc(vendor.id)}">
-                <td><input class="name" type="text" value="${esc(vendor.name)}" aria-label="Name" /></td>
-                <td><input class="seller" type="text" value="${esc(vendor.webkulSellerId || vendor.externalKey || "")}" aria-label="Webkul id" /></td>
-                <td>
-                  <select class="method" aria-label="Payout method for ${esc(vendor.name)}">
-                    <option value="stripe_connect" ${vendor.payoutMethod === "manual_bank" ? "" : "selected"}>Stripe Connect</option>
-                    <option value="manual_bank" ${vendor.payoutMethod === "manual_bank" ? "selected" : ""}>Manual bank</option>
-                  </select>
-                </td>
-                <td><input class="email" type="email" value="${esc(vendor.email || "")}" aria-label="Email for ${esc(vendor.name)}" /></td>
-                <td><label class="check"><input class="active" type="checkbox" ${vendor.active ? "checked" : ""} /> Active</label></td>
-                <td><label class="check"><input class="vat" type="checkbox" ${vendor.vatRegistered ? "checked" : ""} /> VAT</label></td>
-                <td><input class="acct" type="text" value="${esc(vendor.stripeAccountId || "")}" placeholder="acct_…" aria-label="Stripe account for ${esc(vendor.name)}" /></td>
-                <td><input class="bank-label" type="text" value="${esc(vendor.bankLabel || "")}" aria-label="Bank label" /></td>
-                <td><input class="bank-last4" type="text" maxlength="4" value="${esc(vendor.bankLast4 || "")}" aria-label="Bank last 4" /></td>
-                <td><button class="secondary save" type="button">Save</button></td>
-              </tr>
-            `).join("") || `<tr><td colspan="10"><div class="empty">No vendors yet. They are created when an order sync finds a seller.</div></td></tr>`}
-          </tbody>
-        </table>
-      </div>
-    </section>
-    <section class="card">
-      <div class="card-head">Add vendor</div>
-      <div class="card-body">
-        <form id="new-vendor" class="form-grid">
+    <nav class="tabs" aria-label="Vendor sections">
+      <a href="#/vendors" aria-selected="${advice ? "false" : "true"}">Vendors</a>
+      <a href="#/vendors/advice" aria-selected="${advice ? "true" : "false"}">Payment advice</a>
+    </nav>
+    ${advice ? `
+      <section class="card">
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Vendor</th><th>Advice</th><th class="num">Net paid</th><th></th></tr></thead>
+            <tbody>
+              ${adviceRows(vendors) || `<tr><td colspan="4"><div class="empty">No payment advice yet. One is created after a transfer.</div></td></tr>`}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    ` : `
+      <section class="card">
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Name</th><th>Webkul id</th><th>VAT</th><th>Payout</th><th>Status</th><th></th></tr>
+            </thead>
+            <tbody>
+              ${vendors.map((vendor) => `
+                <tr>
+                  <td><strong>${esc(vendor.name)}</strong>${vendor.active ? "" : `<div class="muted">Inactive</div>`}</td>
+                  <td>${esc(vendor.webkulSellerId || vendor.externalKey || "—")}</td>
+                  <td>${vendor.vatRegistered ? badge("vat") : `<span class="badge">No VAT</span>`}</td>
+                  <td>${badge(vendor.payoutMethod === "manual_bank" ? "manual_bank" : "stripe_connect")}</td>
+                  <td>${vendorPayoutReady(vendor) ? badge("ready") : badge("missing")}</td>
+                  <td><button class="secondary" type="button" data-edit-vendor="${esc(vendor.id)}">Edit</button></td>
+                </tr>
+              `).join("") || `<tr><td colspan="6"><div class="empty">No vendors yet. They are created when an order sync finds a seller.</div></td></tr>`}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    `}
+    <div class="drawer-back" id="vendor-drawer" hidden>
+      <form class="drawer" id="vendor-form">
+        <div class="drawer-head">
+          <h2 id="vendor-form-title">Edit vendor</h2>
+          <button class="secondary" id="vendor-close" type="button">Close</button>
+        </div>
+        <p class="page-sub">Set VAT and payout before the first pack. Sellers do not log in here.</p>
+        <section class="drawer-section">
+          <h3>Profile</h3>
           <div class="field"><label for="v-name">Name</label><input id="v-name" name="name" required /></div>
           <div class="field"><label for="v-seller">Webkul id</label><input id="v-seller" name="webkulSellerId" /></div>
           <div class="field"><label for="v-email">Email</label><input id="v-email" name="email" type="email" /></div>
-          <div class="field"><label for="v-method">Payout</label>
+          <label class="check"><input id="v-active" name="active" type="checkbox" checked /> Active</label>
+        </section>
+        <section class="drawer-section">
+          <h3>Tax</h3>
+          <label class="check"><input id="v-vat" name="vatRegistered" type="checkbox" /> VAT registered</label>
+          <p class="page-sub">Off until you confirm it. Shopify tax is not treated as vendor VAT while this is off.</p>
+        </section>
+        <section class="drawer-section">
+          <h3>Payout</h3>
+          <div class="field"><label for="v-method">Method</label>
             <select id="v-method" name="payoutMethod">
               <option value="stripe_connect">Stripe Connect</option>
               <option value="manual_bank">Manual bank</option>
             </select>
           </div>
-          <div class="field"><label for="v-acct">Stripe account</label><input id="v-acct" name="stripeAccountId" placeholder="acct_test_…" /></div>
-          <div class="field"><label for="v-bank">Bank label</label><input id="v-bank" name="bankLabel" placeholder="ENBD ··1234" /></div>
-          <div class="field"><label for="v-last4">Last 4</label><input id="v-last4" name="bankLast4" maxlength="4" /></div>
-          <label class="check"><input name="vatRegistered" type="checkbox" /> VAT</label>
-          <button class="primary" type="submit">Add vendor</button>
-        </form>
+          <div id="payout-connect">
+            <div class="field"><label for="v-acct">Stripe account</label><input id="v-acct" name="stripeAccountId" placeholder="acct_…" autocomplete="off" /></div>
+          </div>
+          <div id="payout-manual" hidden>
+            <div class="field"><label for="v-bank">Bank label</label><input id="v-bank" name="bankLabel" placeholder="ENBD" autocomplete="off" /></div>
+            <div class="field"><label for="v-last4">Last 4</label><input id="v-last4" name="bankLast4" inputmode="numeric" maxlength="4" autocomplete="off" /></div>
+          </div>
+        </section>
         <p class="msg" id="msg"></p>
-      </div>
-    </section>
-    <section class="card">
-      <div class="card-head">Payment advice</div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>Vendor</th><th>Advice</th><th class="num">Net paid</th><th></th></tr></thead>
-          <tbody>
-            ${vendors.flatMap((vendor) => (vendor.invoices || []).map((invoice) => `<tr>
-              <td>${esc(vendor.name)}</td>
-              <td>${esc(invoice.number)}</td>
-              <td class="num">${aed(invoice.amount)}</td>
-              <td><a href="/api/lines/${esc(invoice.settlementLineId)}/invoice">Download statement</a></td>
-            </tr>`)).join("") || `<tr><td colspan="4"><div class="empty">No payment advice yet. One is created after a transfer.</div></td></tr>`}
-          </tbody>
-        </table>
-      </div>
-    </section>
+        <div class="drawer-actions">
+          <button class="primary" type="submit">Save</button>
+        </div>
+      </form>
+    </div>
   `);
   bindChrome();
-  for (const row of app.querySelectorAll("tr[data-id]")) {
-    row.querySelector(".save").addEventListener("click", async () => {
-      try {
-        await api(`/api/vendors/${row.dataset.id}`, {
-          method: "PATCH",
-          body: {
-            name: row.querySelector(".name").value,
-            webkulSellerId: row.querySelector(".seller").value,
-            email: row.querySelector(".email").value,
-            active: row.querySelector(".active").checked,
-            vatRegistered: row.querySelector(".vat").checked,
-            payoutMethod: row.querySelector(".method").value,
-            stripeAccountId: row.querySelector(".acct").value,
-            bankLabel: row.querySelector(".bank-label").value,
-            bankLast4: row.querySelector(".bank-last4").value,
-          },
-        });
-        app.querySelector("#msg").textContent = "Saved. Requalify orders before the next pack so VAT is recalculated.";
-      } catch (error) {
-        app.querySelector("#msg").textContent = error.message;
-      }
-    });
+  const byId = new Map(vendors.map((vendor) => [vendor.id, vendor]));
+  const drawer = app.querySelector("#vendor-drawer");
+  const form = app.querySelector("#vendor-form");
+
+  function showPayoutFields() {
+    const manual = form.payoutMethod.value === "manual_bank";
+    app.querySelector("#payout-connect").hidden = manual;
+    app.querySelector("#payout-manual").hidden = !manual;
   }
-  app.querySelector("#new-vendor").addEventListener("submit", async (event) => {
+
+  function openVendor(vendor) {
+    form.dataset.id = vendor?.id || "";
+    app.querySelector("#vendor-form-title").textContent = vendor ? "Edit vendor" : "Add vendor";
+    form.name.value = vendor?.name || "";
+    form.webkulSellerId.value = vendor?.webkulSellerId || vendor?.externalKey || "";
+    form.email.value = vendor?.email || "";
+    form.active.checked = vendor ? vendor.active !== false : true;
+    form.vatRegistered.checked = Boolean(vendor?.vatRegistered);
+    form.payoutMethod.value = vendor?.payoutMethod === "manual_bank" ? "manual_bank" : "stripe_connect";
+    form.stripeAccountId.value = vendor?.stripeAccountId || "";
+    form.bankLabel.value = vendor?.bankLabel || "";
+    form.bankLast4.value = vendor?.bankLast4 || "";
+    app.querySelector("#msg").textContent = "";
+    showPayoutFields();
+    drawer.hidden = false;
+    form.name.focus();
+  }
+
+  function closeVendor() {
+    drawer.hidden = true;
+  }
+
+  app.querySelector("#add-vendor")?.addEventListener("click", () => openVendor(null));
+  for (const button of app.querySelectorAll("[data-edit-vendor]")) {
+    button.addEventListener("click", () => openVendor(byId.get(button.dataset.editVendor)));
+  }
+  app.querySelector("#vendor-close").addEventListener("click", closeVendor);
+  drawer.addEventListener("click", (event) => {
+    if (event.target === drawer) closeVendor();
+  });
+  form.payoutMethod.addEventListener("change", showPayoutFields);
+  form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    const form = event.currentTarget;
+    const manual = form.payoutMethod.value === "manual_bank";
+    const body = {
+      name: form.name.value,
+      webkulSellerId: form.webkulSellerId.value,
+      email: form.email.value,
+      active: form.active.checked,
+      vatRegistered: form.vatRegistered.checked,
+      payoutMethod: manual ? "manual_bank" : "stripe_connect",
+      stripeAccountId: manual ? undefined : form.stripeAccountId.value,
+      bankLabel: manual ? form.bankLabel.value : undefined,
+      bankLast4: manual ? form.bankLast4.value : undefined,
+    };
+    const id = form.dataset.id;
     try {
-      await api("/api/vendors", {
-        method: "POST",
-        body: {
-          name: form.name.value,
-          webkulSellerId: form.webkulSellerId.value,
-          email: form.email.value,
-          payoutMethod: form.payoutMethod.value,
-          stripeAccountId: form.stripeAccountId.value,
-          bankLabel: form.bankLabel.value,
-          bankLast4: form.bankLast4.value,
-          vatRegistered: form.vatRegistered.checked,
-        },
-      });
+      await api(id ? `/api/vendors/${id}` : "/api/vendors", { method: id ? "PATCH" : "POST", body });
+      closeVendor();
       await render();
     } catch (error) {
       app.querySelector("#msg").textContent = error.message;

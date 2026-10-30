@@ -160,16 +160,17 @@ button.critical { background: #c8260d; color: white; border: 0; }
   padding: 0 10px;
 }
 .filters input { width: min(320px, 100%); }
-.tabs { display: flex; gap: 4px; padding: 8px 12px 0; }
-.tabs button {
+.tabs { display: flex; gap: 4px; padding: 0 0 12px; }
+.tabs a, .tabs button {
   background: transparent;
   border: 0;
   border-radius: 8px 8px 0 0;
   padding: 8px 10px;
   color: var(--sub);
   font-weight: 550;
+  text-decoration: none;
 }
-.tabs button[aria-selected="true"] {
+.tabs a[aria-selected="true"], .tabs button[aria-selected="true"] {
   color: var(--text);
   box-shadow: inset 0 -2px 0 var(--fill);
 }
@@ -281,6 +282,38 @@ a.rowlink:hover { text-decoration: underline; }
 .modal-card h2 { margin: 0 0 8px; font-size: 16px; }
 .modal-card p { margin: 0 0 16px; color: var(--sub); }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+.drawer-back {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  z-index: 6;
+  display: flex;
+  justify-content: flex-end;
+}
+.drawer-back[hidden] { display: none; }
+.drawer {
+  width: min(420px, 100%);
+  height: 100%;
+  background: var(--surface);
+  box-shadow: -12px 0 32px rgba(0, 0, 0, 0.12);
+  padding: 20px;
+  overflow: auto;
+}
+.drawer-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.drawer-head h2 { margin: 0; font-size: 18px; }
+.drawer-section { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border); }
+.drawer-section h3 { margin: 0 0 10px; font-size: 13px; }
+.drawer .field input, .drawer .field select {
+  width: 100%;
+  height: 32px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px #8a8a8a;
+  padding: 0 10px;
+}
+.drawer-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 
 @media (max-width: 960px) {
   .admin { grid-template-columns: 1fr; }
