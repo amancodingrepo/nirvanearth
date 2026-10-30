@@ -1,4 +1,5 @@
 const app = document.querySelector("#app");
+let flash = "";
 
 const money = new Intl.NumberFormat("en-AE", { style: "currency", currency: "AED" });
 const aed = (value) => money.format(Number(value || 0));
@@ -410,7 +411,7 @@ async function renderSettlements(me) {
     <section class="card">
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Month</th><th>Status</th><th class="num">Payable</th><th class="num">Held</th><th class="num">Stripe Connect</th><th class="num">Manual bank</th><th></th></tr></thead>
+          <thead><tr><th>Month</th><th>Status</th><th class="num">Payable</th><th class="num">Held</th><th class="num">Stripe Connect</th><th class="num">Manual bank</th><th>Pay from</th><th></th></tr></thead>
           <tbody>
             ${packs.map((pack) => `<tr>
               <td><a class="rowlink" href="#/settlements/${esc(pack.id)}">${esc(monthLabel(pack.yearMonth))}</a></td>
@@ -419,8 +420,9 @@ async function renderSettlements(me) {
               <td class="num">${aed(pack.heldTotal)}</td>
               <td class="num">${aed(pack.connectPayableTotal || 0)}</td>
               <td class="num">${aed(pack.manualPayableTotal || 0)}</td>
+              <td>${esc(payoutFor(pack.yearMonth).label)}</td>
               <td><a href="#/settlements/${esc(pack.id)}">Open</a></td>
-            </tr>`).join("") || `<tr><td colspan="7"><div class="empty">No settlements yet. Create one for a month that already has orders.</div></td></tr>`}
+            </tr>`).join("") || `<tr><td colspan="8"><div class="empty">No settlements yet. Create one for a month that already has orders.</div></td></tr>`}
           </tbody>
         </table>
       </div>
@@ -457,8 +459,15 @@ function payRows(lines, payoutsEnabled) {
         <tbody>
           ${lines.map((line) => `
             <tr>
-              <td class="wrap"><strong>${esc(line.vendorName)}</strong>${line.vatRegistered ? "" : `<div class="muted">No VAT</div>`}</td>
-              <td>${badge(line.payoutMethod === "manual_bank" ? "manual_bank" : "stripe_connect")}</td>
+              <td class="wrap">
+                <strong>${esc(line.vendorName)}</strong>
+                <div>${line.vatRegistered ? badge("vat") : `<span class="badge">No VAT</span>`}</div>
+                <div class="muted">Base ${aed(line.commissionBaseSum)} · Commission ${aed(line.commissionSum)} · Shipping ${aed(line.shippingSum)}</div>
+              </td>
+              <td class="wrap">
+                ${badge(line.payoutMethod === "manual_bank" ? "manual_bank" : "stripe_connect")}
+                <div class="muted">${line.payoutMethod === "manual_bank" ? "Bank payment" : (line.stripeAccountId ? esc(line.stripeAccountId) : "No Stripe account")}</div>
+              </td>
               <td class="num">${line.orderLineCount}</td>
               <td class="num">${aed(line.ruleNetSum ?? line.vendorNetSum)}${line.ruleNetSum != null && Math.abs(line.ruleNetSum - line.vendorNetSum) > 0.001 ? `<div class="muted">Already paid ${aed(line.vendorNetSum)}</div>` : ""}</td>
               <td>${badge(line.status)}</td>
@@ -592,8 +601,8 @@ function orderPairs(lines) {
         <td>${esc(line.orderNumber || line.shopifyOrderId)}</td>
         <td class="wrap">${esc(line.title)}</td>
         <td>${line.isPlatformOwn ? "Nirvan Earth" : esc(line.vendorName || "—")}</td>
-        <td class="num">${line.isPlatformOwn ? "—" : aed(line.vendorNet)}</td>
-        <td>${line.isPlatformOwn ? badge("own") : badge(line.status)}</td>
+        <td class="num">${aed(line.vendorNet)}</td>
+        <td>${badge(line.status)}${line.isPlatformOwn ? ` ${badge("own")}` : ""}</td>
       </tr>
       <tr class="detail" data-detail="${esc(line.id)}" hidden>
         <td colspan="6">
@@ -697,7 +706,7 @@ async function renderOrders(me) {
   app.querySelector("#sync").addEventListener("click", async () => {
     try {
       const result = await api("/api/sync", { method: "POST" });
-      say({ message: `Shopify refresh finished. ${result.imported} orders, ${result.linesUpserted} lines.` });
+      flash = `Shopify refresh finished. ${result.imported} orders, ${result.linesUpserted} lines.`;
       await render();
     } catch (error) { say(error); }
   });
@@ -707,7 +716,7 @@ async function renderOrders(me) {
       const held = result.transferredUnchanged?.length
         ? ` ${result.transferredUnchanged.length} already paid line(s) kept the paid amount.`
         : "";
-      say({ message: `Checked ${result.updated} line(s) again.${held}` });
+      flash = `Checked ${result.updated} line(s) again.${held}`;
       await render();
     } catch (error) { say(error); }
   });
@@ -1137,19 +1146,27 @@ async function renderRules(me) {
   }
 }
 
+function showFlash() {
+  const node = app.querySelector("#msg");
+  if (!node || !flash) return;
+  node.textContent = flash;
+  flash = "";
+}
+
 async function render() {
   const { path, id } = route();
   if (path === "login") return loginView();
   const me = await ensureUser();
   if (!me) return;
-  if (path === "health" || path === "system") return renderHealth(me);
-  if (path === "orders") return renderOrders(me);
-  if (path === "vendors") return renderVendors(me);
-  if (path === "audit" || path === "activity") return renderAudit(me);
-  if (path === "packs" || path === "settlements") return id ? renderPack(me) : renderSettlements(me);
-  if (path === "owner") return renderOwner(me);
-  if (path === "rules") return renderRules(me);
-  return renderHome(me);
+  if (path === "health" || path === "system") await renderHealth(me);
+  else if (path === "orders") await renderOrders(me);
+  else if (path === "vendors") await renderVendors(me);
+  else if (path === "audit" || path === "activity") await renderAudit(me);
+  else if (path === "packs" || path === "settlements") await (id ? renderPack(me) : renderSettlements(me));
+  else if (path === "owner") await renderOwner(me);
+  else if (path === "rules") await renderRules(me);
+  else await renderHome(me);
+  showFlash();
 }
 
 window.addEventListener("hashchange", () => {
