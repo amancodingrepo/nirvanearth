@@ -98,7 +98,14 @@ a { color: inherit; }
 }
 .topbar .crumb { color: var(--sub); }
 .topbar .crumb strong { color: var(--text); font-weight: 650; }
-.top-meta { display: flex; align-items: center; gap: 8px; color: var(--sub); }
+.top-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; color: var(--sub); justify-content: flex-end; }
+.mode-banner {
+  background: #fff8db;
+  color: #5e4200;
+  padding: 10px 16px;
+  border-bottom: 1px solid #e6c200;
+  font-weight: 550;
+}
 
 .page { padding: 20px 24px 48px; max-width: 1280px; }
 .page-head {
@@ -125,7 +132,26 @@ button.secondary {
   border: 0;
   box-shadow: inset 0 0 0 1px #b5b5b5, var(--shadow);
 }
-button.secondary:hover { background: #f7f7f7; }
+button.secondary:hover, a.secondary:hover { background: #f7f7f7; }
+a.secondary {
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 8px;
+  font-weight: 550;
+  text-decoration: none;
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px #b5b5b5, var(--shadow);
+}
+button.ghost {
+  background: transparent;
+  border: 0;
+  color: var(--info);
+  font-weight: 550;
+  height: auto;
+  padding: 0;
+}
 button:disabled { opacity: 0.45; cursor: not-allowed; }
 button.critical { background: #c8260d; color: white; border: 0; }
 
@@ -315,15 +341,78 @@ a.rowlink:hover { text-decoration: underline; }
 }
 .drawer-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 
+.steps { display: flex; gap: 8px; margin: 0 0 16px; padding: 0; list-style: none; }
+.steps li {
+  flex: 1;
+  background: var(--surface);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  box-shadow: 0 0 0 1px var(--border);
+}
+.steps li[aria-current="step"] { box-shadow: inset 0 0 0 2px var(--fill); }
+.steps li.done { background: var(--success-bg); }
+.steps .k { color: var(--sub); font-size: 12px; font-weight: 550; }
+.steps strong { display: block; margin-top: 2px; }
+
+.attn a {
+  display: block;
+  padding: 12px 16px;
+  text-decoration: none;
+  border-bottom: 1px solid #f1f1f1;
+}
+.attn a:last-child { border-bottom: 0; }
+.attn a:hover { background: #fafafa; }
+.attn strong { display: block; }
+
+details.help, details.fold {
+  background: var(--surface);
+  border-radius: var(--radius);
+  box-shadow: 0 0 0 1px var(--border), var(--shadow);
+  margin-bottom: 16px;
+}
+details.help summary, details.fold summary {
+  padding: 12px 16px;
+  cursor: pointer;
+  font-weight: 650;
+}
+details.help .card-body, details.fold .card-body { padding: 0 16px 16px; }
+
+.facts {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px 16px;
+}
+.facts span { display: block; color: var(--sub); font-size: 12px; }
+tr.detail td { background: #fafafa; white-space: normal; }
+td.wrap { white-space: normal; }
+
+.health-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.health-grid .card { padding: 16px; margin: 0; }
+.health-grid h2 { margin: 0 0 6px; font-size: 16px; }
+.health-grid p { margin: 8px 0 0; }
+
+.timeline { list-style: none; margin: 0; padding: 0; }
+.timeline li {
+  display: grid;
+  grid-template-columns: 190px 1fr;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid #f1f1f1;
+}
+.timeline li:last-child { border-bottom: 0; }
+.propose { padding: 16px; }
+
 @media (max-width: 960px) {
   .admin { grid-template-columns: 1fr; }
   .nav { position: static; height: auto; flex-direction: row; flex-wrap: wrap; }
   .shop { padding-bottom: 0; }
   .nav .spacer { display: none; }
-  .metrics, .rules, .form-grid { grid-template-columns: 1fr 1fr; }
+  .metrics, .rules, .form-grid, .facts, .health-grid { grid-template-columns: 1fr 1fr; }
   .page { padding: 16px; }
+  .steps { flex-direction: column; }
+  .timeline li { grid-template-columns: 1fr; gap: 4px; }
 }
 @media (max-width: 640px) {
-  .metrics, .form-grid, .page-head { grid-template-columns: 1fr; display: grid; }
+  .metrics, .form-grid, .page-head, .facts, .health-grid { grid-template-columns: 1fr; }
   .page-head { display: flex; flex-direction: column; }
 }
