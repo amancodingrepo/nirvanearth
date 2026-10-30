@@ -50,11 +50,11 @@ export interface SellerSignal {
 }
 
 /**
- * Webkul's exact line field is confirmed in the shop during Days 1–2.
- * Until then this accepts the shapes Webkul and Shopify commonly write:
- * line properties (seller id), a `vendorKey::sku` SKU, or the line vendor name.
+ * Seller id is read from the Shopify line. There is no Webkul API.
+ * Priority: configured or known line properties, then `sellerKey::sku`, then the line vendor name.
+ * `extraPropertyNames` (WEBKUL_PROPERTY_NAMES or the active rule) are added to the built-in set.
  */
-const SELLER_PROPERTY_NAMES = new Set([
+export const SELLER_PROPERTY_NAMES = [
   "seller_id",
   "seller",
   "seller id",
@@ -64,18 +64,31 @@ const SELLER_PROPERTY_NAMES = new Set([
   "webkul_seller_id",
   "_seller",
   "_seller_id",
-]);
+] as const;
 
-export function parseSellerSignal(line: {
-  properties?: Array<{ name?: string | null; value?: string | number | null }> | null;
-  vendor?: string | null;
-  sku?: string | null;
-}): SellerSignal {
+export function sellerPropertyNameSet(extra?: string[]): Set<string> {
+  const names = new Set<string>(SELLER_PROPERTY_NAMES);
+  for (const name of extra ?? []) {
+    const normalized = name.trim().toLowerCase();
+    if (normalized) names.add(normalized);
+  }
+  return names;
+}
+
+export function parseSellerSignal(
+  line: {
+    properties?: Array<{ name?: string | null; value?: string | number | null }> | null;
+    vendor?: string | null;
+    sku?: string | null;
+  },
+  options?: { propertyNames?: string[] },
+): SellerSignal {
+  const allowed = sellerPropertyNameSet(options?.propertyNames);
   const properties = Array.isArray(line.properties) ? line.properties : [];
   for (const property of properties) {
     const name = String(property.name ?? "").trim().toLowerCase();
     const value = property.value == null ? "" : String(property.value).trim();
-    if (SELLER_PROPERTY_NAMES.has(name) && value) {
+    if (allowed.has(name) && value) {
       return {
         externalKey: value,
         vendorName: line.vendor?.trim() || value,
@@ -103,8 +116,9 @@ export function resolveSeller(
     sku?: string | null;
   },
   _product?: unknown,
+  options?: { propertyNames?: string[] },
 ): { webkulSellerId: string | null; sellerName: string | null } | null {
-  const signal = parseSellerSignal(line);
+  const signal = parseSellerSignal(line, options);
   if (!signal.externalKey && !signal.vendorName) return null;
   return { webkulSellerId: signal.externalKey, sellerName: signal.vendorName };
 }

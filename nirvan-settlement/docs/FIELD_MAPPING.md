@@ -7,7 +7,7 @@ Rules version `2026-10-28`. Shopify Admin order payload and Webkul values writte
 | `line_items.price` × `line_items.quantity` | Listed product value before discount (AED) | `gross`. May include VAT and an included delivery allowance. |
 | `line_items.discount_allocations[].amount`, else `line_items.total_discount` | Discount on that line | Subtracted first. Commission uses the discounted value. |
 | `line_items.quantity` | Units sold | Multiplies `price` into `gross`. The delivery allowance property is a line total, not a per-unit amount. |
-| Line property `webkul_seller_id` (also `seller_id`, `vendor_id`, `_seller`, and the other names in `parseSellerSignal`) | Webkul seller id | Matches `vendors.webkul_seller_id` or `external_key`. |
+| Line property `webkul_seller_id` (also `seller_id`, `seller`, `seller id`, `vendor_id`, `vendor id`, `webkul_seller`, `_seller`, `_seller_id`) | Webkul seller id | Matches `vendors.webkul_seller_id` or `external_key`. Extra names come from `WEBKUL_PROPERTY_NAMES` or the active rule's `sellerPropertyNames`. A live shop line-property dump was not re-sampled in the 30 Oct intake change, so this set stays the known Webkul and Shopify names until a real order shows another key. |
 | SKU prefix `sellerKey::sku` | Fallback seller id | Used when no seller property is present. |
 | `line_items.vendor` | Seller display name | Fallback match on `vendors.name`. Also an own-product signal when the name is `Nirvan Earth` (`PLATFORM_OWN_VENDOR_NAMES`). |
 | `line_items.tax_lines[].price` and `title` | Tax charged on the line | Summed into `tax_amount`. Treated as vendor VAT only when the matched vendor has `vat_registered = true` and the title is stored as returned by Shopify. |
@@ -23,6 +23,7 @@ Rules version `2026-10-28`. Shopify Admin order payload and Webkul values writte
 | `order.refunds[].refund_line_items` | Refund against a line | Open adjustment. Blocks qualification until resolved. |
 | `nirvan_adjustments` | Chargeback, dispute, or other hold | Same open-adjustment gate. Not a Shopify field. Test and manual use. |
 | `order.currency` | Settlement currency | AED only. Other currencies are rejected at ingest. |
+| `vendors.payout_method` | How that vendor is paid | `stripe_connect` (default on auto-create) or `manual_bank`. Copied onto the settlement line when the pack is generated. Later edits do not rewrite a closed pack. |
 
 ## Gaps and test-mode defaults
 
@@ -30,6 +31,6 @@ Rules version `2026-10-28`. Shopify Admin order payload and Webkul values writte
 |-----|----------------------------|-------------------|
 | Included delivery allowance | Shopify has no standard field for a delivery amount baked into the product price. | 0 and `unassigned` until a line property is set. Separate `shipping_lines` are not treated as this allowance. Test order #9004 sets `included_delivery_allowance` = 10 and `delivery_allocation` = `unassigned` on a VAT line priced at 115. Commission base is 100. The allowance is not added to vendor net. |
 | Who keeps the allowance | No commercial flag in Shopify or Webkul. | `unassigned`. The amount is not commissioned and is not paid to the vendor. |
-| Webkul seller API | This app does not call Webkul. Seller id is whatever Webkul writes onto the Shopify line. | Match property, then `sellerKey::sku`, then vendor name. |
+| Webkul seller API | This app does not call Webkul. Seller id is whatever Webkul writes onto the Shopify line. | Match property, then `sellerKey::sku`, then vendor name. A new signal creates a vendor: VAT off, payout `stripe_connect`, no Stripe account, active. Platform-own lines are not given a vendor. |
 | VAT registration | Shopify tax lines do not say the vendor is VAT-registered. | `vendors.vat_registered`. Unknown new vendors are non-VAT, so their tax is not a vendor VAT line. |
 | Per-unit allowance | A property named like a unit rate would be wrong. | The property is the line total in AED. |

@@ -56,8 +56,13 @@ export async function generateMonthPack(
 
   const payable = [...inMonth.filter((line) => line.status === "qualified"), ...rolled];
   const held = inMonth.filter((line) => line.status !== "qualified");
-  await writeGroups(db, pack.id, "payable", payable);
-  await writeGroups(db, pack.id, "held", held);
+  const vendorIds = [...new Set([...payable, ...held].map((line) => line.vendorId).filter((id): id is string => Boolean(id)))];
+  const vendors = vendorIds.length
+    ? await db.vendor.findMany({ where: { id: { in: vendorIds } } })
+    : [];
+  const payoutByVendor = new Map(vendors.map((vendor) => [vendor.id, vendor.payoutMethod]));
+  await writeGroups(db, pack.id, "payable", payable, payoutByVendor);
+  await writeGroups(db, pack.id, "held", held, payoutByVendor);
 
   await recordAudit(db, "pack.generated", actorEmail, {
     packId: pack.id,
@@ -87,6 +92,7 @@ async function writeGroups(
   packId: string,
   kind: "payable" | "held",
   lines: OrderLine[],
+  payoutByVendor: Map<string, string>,
 ): Promise<void> {
   const groups = new Map<string, OrderLine[]>();
   for (const line of lines) {
@@ -109,6 +115,7 @@ async function writeGroups(
         orderLineCount: group.length,
         feeNotes: FEE_NOTES,
         status: kind === "payable" ? "qualified" : "blocked",
+        payoutMethod: payoutByVendor.get(vendorId) === "manual_bank" ? "manual_bank" : "stripe_connect",
       },
     });
     if (kind === "payable") {

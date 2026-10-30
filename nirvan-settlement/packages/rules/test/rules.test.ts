@@ -255,6 +255,15 @@ describe("own products and seller signals", () => {
     assert.equal(signal.externalKey, "seller-9");
   });
 
+  it("accepts an extra seller property name from config", () => {
+    const signal = parseSellerSignal(
+      { properties: [{ name: "wk_seller", value: "rose" }], vendor: "Rose Co" },
+      { propertyNames: ["wk_seller"] },
+    );
+    assert.equal(signal.externalKey, "rose");
+    assert.equal(signal.vendorName, "Rose Co");
+  });
+
   it("reads a sku prefix and falls back to vendor name", () => {
     assert.equal(parseSellerSignal({ sku: "honey::SKU-1", vendor: "Gulf Honey Co" }).externalKey, "honey");
     assert.deepEqual(parseSellerSignal({ vendor: "Desert Botanics" }), {

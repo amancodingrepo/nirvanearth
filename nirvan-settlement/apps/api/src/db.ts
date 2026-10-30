@@ -32,6 +32,7 @@ export async function resetDatabase(db: PrismaClient): Promise<void> {
       "settlement_rule_versions",
       "adjustments",
       "order_snapshots",
+      "sync_state",
       "vendors",
       "admin_users"
     RESTART IDENTITY CASCADE

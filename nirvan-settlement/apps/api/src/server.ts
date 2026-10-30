@@ -12,7 +12,7 @@ import { enrichLines, ingestShopifyOrder, qualifyAll, requalifyLines } from "./i
 import { runSeedDemo } from "./seed-demo.ts";
 import { createMailer, type Mailer } from "./mailer.ts";
 import { approvePack, generateMonthPack, getPack, submitPack } from "./pack.ts";
-import { executePack } from "./execute.ts";
+import { executePack, markManualPaid } from "./execute.ts";
 import { ensureSettlementInvoice, invoicePdfForLine } from "./invoice.ts";
 import { ownerReportCsv, ownerSalesReport } from "./owner-report.ts";
 import { applyPayoutEvent, requestBankPayout } from "./payout.ts";
@@ -20,11 +20,12 @@ import { approveRule, createDraftRule, listRules, submitRule } from "./rules-sto
 import { presentLine, presentPack } from "./serialize.ts";
 import {
   exchangeShopifyCode,
-  fetchPaidOrders,
   getShopifyAccessToken,
   isValidShopifyDomain,
+  registerOrderWebhooks,
   verifyShopifyHmac,
 } from "./shopify.ts";
+import { acceptShopifyWebhook, syncShopifyLedger } from "./sync.ts";
 import { RULES_VERSION } from "@nirvan/rules";
 import { constructStripeEvent, createStripeGateway, pingStripe } from "./stripe.ts";
 import type { TransferGateway } from "./types.ts";
@@ -277,7 +278,22 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
 
   app.get("/api/orders", async (request) => {
     actorFromRequest(request, config);
+    const query = request.query as { q?: string; status?: string; own?: string };
+    const q = query.q?.trim();
     const lines = await db.orderLine.findMany({
+      where: {
+        status: query.status || undefined,
+        isPlatformOwn: query.own === "true" ? true : query.own === "false" ? false : undefined,
+        ...(q
+          ? {
+              OR: [
+                { title: { contains: q, mode: "insensitive" } },
+                { shopifyOrderId: { contains: q } },
+                { vendor: { name: { contains: q, mode: "insensitive" } } },
+              ],
+            }
+          : {}),
+      },
       include: { vendor: true, order: true },
       orderBy: { paidAt: "desc" },
     });
@@ -285,14 +301,28 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   });
 
   async function syncPaidOrders(actor: string, days?: number) {
-    const orders = await fetchPaidOrders(config, { limit: 50, days }, db);
-    let linesUpserted = 0;
-    for (const order of orders) {
-      const result = await ingestShopifyOrder(db, config, order, actor);
-      linesUpserted += result.lineCount;
-    }
-    return { imported: orders.length, ordersUpserted: orders.length, linesUpserted };
+    return syncShopifyLedger(db, config, actor, { days });
   }
+
+  app.post("/api/shopify/webhooks", async (request, reply) => {
+    const raw = (request as FastifyRequest & { rawBody?: string }).rawBody ?? "";
+    const hmacHeader = request.headers["x-shopify-hmac-sha256"];
+    const topic = request.headers["x-shopify-topic"];
+    const result = await acceptShopifyWebhook(db, config, {
+      rawBody: raw,
+      hmac: typeof hmacHeader === "string" ? hmacHeader : undefined,
+      topic: typeof topic === "string" ? topic : undefined,
+    });
+    return reply.status(result.status).send(result.body);
+  });
+
+  app.post("/api/shopify/webhooks/register", async (request) => {
+    actorFromRequest(request, config);
+    if (!config.appUrl.startsWith("https://")) {
+      throw new HttpError(400, "APP_URL must be https before Shopify webhooks can be registered.");
+    }
+    return registerOrderWebhooks(config, db);
+  });
 
   app.post("/api/sync", async (request) => {
     const actor = actorFromRequest(request, config);
@@ -329,7 +359,19 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
 
   app.get("/api/vendors", async (request) => {
     actorFromRequest(request, config);
+    const query = request.query as { q?: string };
+    const q = query.q?.trim();
     const vendors = await db.vendor.findMany({
+      where: q
+        ? {
+            OR: [
+              { name: { contains: q, mode: "insensitive" } },
+              { email: { contains: q, mode: "insensitive" } },
+              { webkulSellerId: { contains: q, mode: "insensitive" } },
+              { externalKey: { contains: q, mode: "insensitive" } },
+            ],
+          }
+        : undefined,
       orderBy: { name: "asc" },
       include: {
         invoices: {
@@ -339,57 +381,75 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
         },
       },
     });
-    return { vendors };
+    return { vendors: vendors.map(presentVendor) };
   });
 
   app.post("/api/vendors", async (request) => {
     actorFromRequest(request, config);
-    const body = request.body as {
-      name?: string;
-      email?: string;
-      vatRegistered?: boolean;
-      stripeAccountId?: string;
-      externalKey?: string;
-      webkulSellerId?: string;
-      tradeLicenceRef?: string;
-    };
+    const body = request.body as VendorBody;
     if (!body.name?.trim()) throw new HttpError(400, "Vendor name is required.");
     const sellerId = body.webkulSellerId?.trim() || body.externalKey?.trim() || null;
-    const vendor = await db.vendor.create({
-      data: {
-        name: body.name.trim(),
-        email: body.email?.trim() || null,
-        vatRegistered: Boolean(body.vatRegistered),
-        stripeAccountId: body.stripeAccountId?.trim() || null,
-        webkulSellerId: sellerId,
-        externalKey: sellerId,
-        tradeLicenceRef: body.tradeLicenceRef?.trim() || null,
-      },
-    });
-    return { vendor };
+    try {
+      const vendor = await db.vendor.create({
+        data: {
+          name: body.name.trim(),
+          email: body.email?.trim() || null,
+          vatRegistered: Boolean(body.vatRegistered),
+          stripeAccountId: cleanStripeAccount(body.stripeAccountId),
+          payoutMethod: cleanPayoutMethod(body.payoutMethod) ?? "stripe_connect",
+          bankLabel: cleanBankLabel(body.bankLabel),
+          bankLast4: cleanBankLast4(body),
+          webkulSellerId: sellerId,
+          externalKey: sellerId,
+          tradeLicenceRef: body.tradeLicenceRef?.trim() || null,
+          active: body.active !== false,
+        },
+      });
+      return { vendor: presentVendor(vendor) };
+    } catch (error) {
+      if (isUniqueConflict(error)) throw new HttpError(409, "A vendor with that Webkul id already exists.");
+      throw error;
+    }
   });
 
   app.patch("/api/vendors/:id", async (request) => {
     actorFromRequest(request, config);
     const { id } = request.params as { id: string };
-    const body = request.body as {
-      vatRegistered?: boolean;
-      stripeAccountId?: string | null;
-      email?: string | null;
-      active?: boolean;
-      tradeLicenceRef?: string | null;
-    };
-    const vendor = await db.vendor.update({
-      where: { id },
-      data: {
-        vatRegistered: body.vatRegistered,
-        stripeAccountId: body.stripeAccountId,
-        email: body.email,
-        active: body.active,
-        tradeLicenceRef: body.tradeLicenceRef,
-      },
-    });
-    return { vendor };
+    const body = request.body as VendorBody;
+    const existing = await db.vendor.findUnique({ where: { id } });
+    if (!existing) throw new HttpError(404, "Vendor not found.");
+    const sellerId = body.webkulSellerId?.trim() || body.externalKey?.trim();
+    try {
+      const vendor = await db.vendor.update({
+        where: { id },
+        data: {
+          name: body.name?.trim() || undefined,
+          vatRegistered: body.vatRegistered,
+          stripeAccountId: body.stripeAccountId === undefined ? undefined : cleanStripeAccount(body.stripeAccountId),
+          payoutMethod: body.payoutMethod === undefined ? undefined : cleanPayoutMethod(body.payoutMethod),
+          bankLabel: body.bankLabel === undefined ? undefined : cleanBankLabel(body.bankLabel),
+          bankLast4: body.bankLast4 === undefined && body.iban === undefined ? undefined : cleanBankLast4(body),
+          email: body.email === undefined ? undefined : body.email?.trim() || null,
+          active: body.active,
+          tradeLicenceRef: body.tradeLicenceRef === undefined ? undefined : body.tradeLicenceRef?.trim() || null,
+          webkulSellerId: sellerId || undefined,
+          externalKey: sellerId || undefined,
+        },
+      });
+      return { vendor: presentVendor(vendor) };
+    } catch (error) {
+      if (isUniqueConflict(error)) throw new HttpError(409, "A vendor with that Webkul id already exists.");
+      throw error;
+    }
+  });
+
+  app.post("/api/vendors/:id/deactivate", async (request) => {
+    actorFromRequest(request, config);
+    const { id } = request.params as { id: string };
+    const existing = await db.vendor.findUnique({ where: { id } });
+    if (!existing) throw new HttpError(404, "Vendor not found.");
+    const vendor = await db.vendor.update({ where: { id }, data: { active: false } });
+    return { vendor: presentVendor(vendor) };
   });
 
   app.get("/api/packs", async (request) => {
@@ -508,6 +568,14 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     return reply.send(pdf.bytes);
   });
 
+  app.post("/api/lines/:id/mark-paid", async (request) => {
+    const actor = actorFromRequest(request, config);
+    const { id } = request.params as { id: string };
+    const body = (request.body ?? {}) as { reference?: string };
+    const result = await markManualPaid(db, config, mailer, id, actor, body.reference);
+    return { alreadyRecorded: result.alreadyRecorded, lineId: id, reference: result.line?.manualReference ?? null };
+  });
+
   app.post("/api/lines/:id/payout", async (request) => {
     const actor = actorFromRequest(request, config);
     const { id } = request.params as { id: string };
@@ -534,6 +602,87 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     ]);
     return { events, emails };
   });
+
+interface VendorBody {
+  name?: string;
+  email?: string | null;
+  vatRegistered?: boolean;
+  stripeAccountId?: string | null;
+  externalKey?: string;
+  webkulSellerId?: string;
+  tradeLicenceRef?: string | null;
+  payoutMethod?: string;
+  bankLabel?: string | null;
+  bankLast4?: string | null;
+  iban?: string | null;
+  active?: boolean;
+}
+
+function presentVendor(vendor: {
+  id: string;
+  name: string;
+  email: string | null;
+  vatRegistered: boolean;
+  tradeLicenceRef: string | null;
+  webkulSellerId: string | null;
+  externalKey: string | null;
+  stripeAccountId: string | null;
+  payoutMethod: string;
+  bankLabel: string | null;
+  bankLast4: string | null;
+  active: boolean;
+  invoices?: Array<{ id: string; number: string; settlementLineId: string; amount: unknown; currency: string }>;
+}) {
+  return {
+    id: vendor.id,
+    name: vendor.name,
+    email: vendor.email,
+    vatRegistered: vendor.vatRegistered,
+    tradeLicenceRef: vendor.tradeLicenceRef,
+    webkulSellerId: vendor.webkulSellerId,
+    externalKey: vendor.externalKey,
+    stripeAccountId: vendor.stripeAccountId,
+    payoutMethod: vendor.payoutMethod === "manual_bank" ? "manual_bank" : "stripe_connect",
+    bankLabel: vendor.bankLabel,
+    bankLast4: vendor.bankLast4,
+    active: vendor.active,
+    invoices: vendor.invoices,
+  };
+}
+
+function cleanPayoutMethod(value: string | undefined): "stripe_connect" | "manual_bank" {
+  if (value == null || value === "") return "stripe_connect";
+  if (value === "stripe_connect" || value === "manual_bank") return value;
+  throw new HttpError(400, "payout_method must be stripe_connect or manual_bank.");
+}
+
+function cleanStripeAccount(value: string | null | undefined): string | null {
+  const trimmed = value?.trim() ?? "";
+  if (!trimmed) return null;
+  if (!trimmed.startsWith("acct_")) throw new HttpError(400, "Stripe account id must start with acct_.");
+  return trimmed;
+}
+
+function cleanBankLabel(value: string | null | undefined): string | null {
+  const trimmed = value?.trim() ?? "";
+  return trimmed ? trimmed.slice(0, 80) : null;
+}
+
+function cleanBankLast4(body: VendorBody): string | null {
+  if (typeof body.iban === "string" && body.iban.trim()) {
+    const digits = body.iban.replace(/\D/g, "");
+    if (digits.length < 4) throw new HttpError(400, "Bank reference must include at least 4 digits.");
+    return digits.slice(-4);
+  }
+  const trimmed = body.bankLast4?.trim() ?? "";
+  if (!trimmed) return null;
+  if (!/^\d{4}$/.test(trimmed)) throw new HttpError(400, "Bank last4 must be 4 digits.");
+  return trimmed;
+}
+
+function isUniqueConflict(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && (error as { code?: string }).code === "P2002";
+}
 
   const webRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../web/public");
   await app.register(fastifyStatic, { root: webRoot });

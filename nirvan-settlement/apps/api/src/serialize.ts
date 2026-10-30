@@ -79,8 +79,10 @@ export function presentPack(pack: {
     orderLineCount: number;
     feeNotes: string | null;
     status: string;
+    payoutMethod?: string;
     stripeTransferId: string | null;
-    vendor: { name: string; email: string | null; vatRegistered: boolean; stripeAccountId: string | null };
+    manualReference?: string | null;
+    vendor: { name: string; email: string | null; vatRegistered: boolean; stripeAccountId: string | null; payoutMethod?: string };
     invoice?: { id: string; number: string } | null;
     payouts?: Array<{ status: string }>;
     orderLines?: Array<{ vendorNet: Decimalish }>;
@@ -88,6 +90,9 @@ export function presentPack(pack: {
 }) {
   const payable = pack.lines.filter((line) => line.kind === "payable");
   const held = pack.lines.filter((line) => line.kind === "held");
+  const methodOf = (line: { payoutMethod?: string }) => (line.payoutMethod === "manual_bank" ? "manual_bank" : "stripe_connect");
+  const connectPayable = payable.filter((line) => methodOf(line) === "stripe_connect");
+  const manualPayable = payable.filter((line) => methodOf(line) === "manual_bank");
   const ruleNet = (line: { vendorNetSum: Decimalish; orderLines?: Array<{ vendorNet: Decimalish }> }) =>
     line.orderLines && line.orderLines.length > 0
       ? line.orderLines.reduce((sum, item) => sum + money(item.vendorNet), 0)
@@ -99,6 +104,8 @@ export function presentPack(pack: {
     createdAt: pack.createdAt,
     ruleVersionLabel: pack.ruleVersion?.versionLabel ?? null,
     payableTotal: payable.reduce((sum, line) => sum + money(line.vendorNetSum), 0),
+    connectPayableTotal: connectPayable.reduce((sum, line) => sum + money(line.vendorNetSum), 0),
+    manualPayableTotal: manualPayable.reduce((sum, line) => sum + money(line.vendorNetSum), 0),
     rulePayableTotal: payable.reduce((sum, line) => sum + ruleNet(line), 0),
     commissionTotal: payable.reduce((sum, line) => sum + money(line.commissionSum), 0),
     heldTotal: held.reduce((sum, line) => sum + money(line.vendorNetSum), 0),
@@ -109,6 +116,7 @@ export function presentPack(pack: {
       vendorEmail: line.vendor.email,
       vatRegistered: line.vendor.vatRegistered,
       stripeAccountId: line.vendor.stripeAccountId,
+      payoutMethod: methodOf(line),
       kind: line.kind,
       commissionBaseSum: money(line.commissionBaseSum),
       commissionSum: money(line.commissionSum),
@@ -119,6 +127,7 @@ export function presentPack(pack: {
       feeNotes: line.feeNotes,
       status: line.status,
       stripeTransferId: line.stripeTransferId,
+      manualReference: line.manualReference ?? null,
       invoiceId: line.invoice?.id ?? null,
       invoiceNumber: line.invoice?.number ?? null,
       bankPayoutStatus: line.stripeTransferId ? payoutLabel(line.payouts?.[0]?.status ?? null) : null,

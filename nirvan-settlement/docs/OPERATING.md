@@ -2,14 +2,14 @@
 
 Test mode until `admin@nirvanearth.com` writes a go-live approval.
 
-1. Sync paid orders (`npm run sync:orders` or `npm run sync -- --days=30`) or wait until orders are already in the ledger. Shopify needs `SHOPIFY_ADMIN_TOKEN`. `npm run enrich` refills vendor and commission fields from stored orders.
-2. Confirm vendors. Set VAT and the test Stripe Custom account id. Own products and gift hampers never get a vendor line.
+1. Paid orders arrive on their own. Shopify sends `orders/paid`, `orders/updated`, and `refunds/create` to `POST /api/shopify/webhooks`. The signature is checked with `SHOPIFY_API_SECRET`. On a host whose `APP_URL` is https, startup registers those topics when the shop is connected. A sync every 20 minutes (`SYNC_INTERVAL_MS`, disable with `ENABLE_SYNC_INTERVAL=false`) is the safety net. **Sync now** (`POST /api/sync` or `npm run sync:orders`) still backfills. It pages through paid orders with Shopify's cursor, then refreshes orders already in the ledger that changed. `npm run enrich` refills vendor and commission fields from stored orders.
+2. Confirm vendors. A new seller id creates a vendor with VAT off and payout method Stripe Connect. Set VAT if they are registered. Set payout to **manual bank** when there is no Connect account, and keep only a bank label and last 4 digits. Stripe Connect vendors need an `acct_` id before execute. Own products and gift hampers never get a vendor line.
 3. On or after the 10th, generate the pack for the previous calendar month (Dubai). Example: `npm run pack -- 2026-09`.
 4. The pack lists payable lines and held lines. Held lines are still inside the return window or have an open refund, chargeback, or dispute.
 5. Submit the pack. The approver gets an email at `admin@nirvanearth.com` (or an outbox row, if `RESEND_API_KEY` is not set). The test from-address may be the provider's test sender, for example `onboarding@resend.dev`. A Nirvan Earth domain sender is not configured. Propose that SMTP domain to the client before production. Do not send settlement mail to customers. The only vendor email is the payment advice created after a successful transfer.
 6. Sign in as `admin@nirvanearth.com` and approve the payable lines.
-7. Execute transfers: `npm run execute -- --pack=<id>` or the button in the ledger.
-8. A failed line stays on the pack. Fix the destination or balance, then execute again. The idempotency key `transfer:<settlement_line_id>` stops a second payout.
+7. Execute Connect transfers: `npm run execute -- --pack=<id>` or the button in the ledger. That sends Stripe Connect lines only. Manual-bank lines move to **awaiting manual payment** and are not sent to Stripe. Mark paid stores the reference `NE-YYYY-MM-<vendor>`, the actor, and a payment advice. Mark paid does not create a transfer. Running execute again does not pay a Connect line twice.
+8. A failed Connect line stays on the pack. Fix the destination or balance, then execute again. The idempotency key `transfer:<settlement_line_id>` stops a second payout. A failed attempt uses `transfer:<lineId>:retry:<failedAttempts>`.
 9. Lines that were held roll into a later month once they qualify. Do not regenerate a pack after it has left draft.
 
 Shipping is shown on the order and is not part of vendor net until the client assigns it.

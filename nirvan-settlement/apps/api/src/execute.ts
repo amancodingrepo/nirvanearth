@@ -1,5 +1,6 @@
 import type { PrismaClient } from "@prisma/client";
 import { formatAed, toFils } from "@nirvan/rules";
+import { recordAudit } from "./audit.ts";
 import { assertApprover, type AppConfig, HttpError } from "./config.ts";
 import { notify, type Mailer } from "./mailer.ts";
 import { money } from "./money-db.ts";
@@ -10,10 +11,19 @@ import type { TransferGateway } from "./types.ts";
 export interface ExecuteResult {
   lineId: string;
   vendorName: string;
-  status: "transferred" | "failed" | "skipped";
+  status: "transferred" | "failed" | "skipped" | "awaiting_manual_payment";
   transferId?: string;
   error?: string;
   simulated: boolean;
+}
+
+export function manualPaymentReference(
+  yearMonth: string,
+  vendor: { externalKey: string | null; webkulSellerId: string | null; name: string },
+): string {
+  const raw = vendor.externalKey || vendor.webkulSellerId || vendor.name;
+  const code = raw.toLowerCase().replace(/[^a-z0-9]+/g, "").slice(0, 16) || "vendor";
+  return `NE-${yearMonth}-${code}`;
 }
 
 export async function executePack(
@@ -52,6 +62,19 @@ export async function executePack(
       });
       continue;
     }
+
+    if (line.payoutMethod === "manual_bank") {
+      const manual = await settleManualLine(db, line, actorEmail);
+      results.push({
+        lineId: line.id,
+        vendorName: line.vendor.name,
+        status: manual.status,
+        error: manual.error,
+        simulated: false,
+      });
+      continue;
+    }
+
     if (!["approved", "failed"].includes(line.status)) {
       results.push({
         lineId: line.id,
@@ -119,7 +142,7 @@ export async function executePack(
       });
       continue;
     }
-    if (!line.vendor.stripeAccountId) {
+    if (!line.vendor.stripeAccountId || !line.vendor.stripeAccountId.startsWith("acct_")) {
       await markFailed(db, line.id, idempotencyKey, vendorNet, "missing_stripe_account");
       results.push({
         lineId: line.id,
@@ -214,15 +237,122 @@ export async function executePack(
     }
   }
 
-  const refreshed = await getPack(db, pack.id);
-  const payable = refreshed.lines.filter((line) => line.kind === "payable");
-  const finished = payable.length === 0 || payable.every((line) => line.status === "transferred");
-  await db.monthPack.update({
-    where: { id: pack.id },
-    data: { status: finished ? "closed" : "executing" },
-  });
+  await closePackIfSettled(db, pack.id);
 
   return results;
+}
+
+async function settleManualLine(
+  db: PrismaClient,
+  line: {
+    id: string;
+    status: string;
+    vendorNetSum: { toString(): string } | number;
+    orderLines: Array<{ id: string }>;
+    vendor: { name: string };
+  },
+  _actorEmail: string,
+): Promise<{ status: ExecuteResult["status"]; error?: string }> {
+  if (line.status === "manual_paid" || line.status === "awaiting_manual_payment") {
+    return { status: "skipped" };
+  }
+  if (!["approved", "failed"].includes(line.status)) {
+    return { status: "skipped", error: `status ${line.status}` };
+  }
+  const vendorNet = money(line.vendorNetSum);
+  const openAdjustment = await db.adjustment.count({
+    where: { status: "open", orderLineId: { in: line.orderLines.map((orderLine) => orderLine.id) } },
+  });
+  if (openAdjustment > 0 || vendorNet <= 0) {
+    await db.settlementLine.update({
+      where: { id: line.id },
+      data: { status: "failed" },
+    });
+    return { status: "failed", error: openAdjustment > 0 ? "open_adjustment" : "non_positive_net" };
+  }
+  await db.settlementLine.update({
+    where: { id: line.id },
+    data: { status: "awaiting_manual_payment" },
+  });
+  return { status: "awaiting_manual_payment" };
+}
+
+export async function markManualPaid(
+  db: PrismaClient,
+  config: AppConfig,
+  mailer: Mailer,
+  lineId: string,
+  actorEmail: string,
+  reference?: string,
+) {
+  assertApprover(config, actorEmail);
+  const line = await db.settlementLine.findUnique({
+    where: { id: lineId },
+    include: { vendor: true, pack: true },
+  });
+  if (!line) throw new HttpError(404, "Settlement line not found.");
+  if (line.payoutMethod !== "manual_bank") {
+    throw new HttpError(409, "This line is paid by Stripe Connect, not a manual bank transfer.");
+  }
+  if (line.status === "manual_paid") {
+    return { line, alreadyRecorded: true };
+  }
+  if (line.status !== "awaiting_manual_payment") {
+    throw new HttpError(409, "Approve and execute the pack before recording a manual payment.");
+  }
+  const cleaned = (reference ?? "").trim();
+  if (cleaned && !/^[A-Za-z0-9._-]{1,64}$/.test(cleaned)) {
+    throw new HttpError(400, "Manual reference may use letters, numbers, dots, underscores, and hyphens.");
+  }
+  const manualReference = cleaned || manualPaymentReference(line.pack.yearMonth, line.vendor);
+  const paidAt = new Date();
+  await db.settlementLine.update({
+    where: { id: line.id },
+    data: {
+      status: "manual_paid",
+      manualPaidAt: paidAt,
+      manualReference,
+      manualPaidBy: actorEmail,
+    },
+  });
+  await recordAudit(db, "manual_payment.recorded", actorEmail, {
+    settlementLineId: line.id,
+    yearMonth: line.pack.yearMonth,
+    vendorName: line.vendor.name,
+    reference: manualReference,
+    amount: money(line.vendorNetSum),
+  });
+  await ensureSettlementInvoice(db, config, mailer, {
+    lineId: line.id,
+    actorEmail,
+    transferredAt: paidAt,
+  });
+  await notify(db, config, mailer, {
+    action: "manual_payment.notified",
+    actorEmail,
+    subject: `Manual payment recorded ${line.vendor.name} ${formatAed(money(line.vendorNetSum))}`,
+    text: [
+      `Vendor: ${line.vendor.name}`,
+      `Amount: ${formatAed(money(line.vendorNetSum))}`,
+      `Reference: ${manualReference}`,
+      `Pack: ${line.pack.yearMonth}`,
+      "No Stripe Transfer was created.",
+    ].join("\n"),
+  });
+  await closePackIfSettled(db, line.monthPackId);
+  return { line: await db.settlementLine.findUnique({ where: { id: line.id } }), alreadyRecorded: false };
+}
+
+async function closePackIfSettled(db: PrismaClient, packId: string): Promise<void> {
+  const refreshed = await getPack(db, packId);
+  if (!["approved", "executing"].includes(refreshed.status)) return;
+  const payable = refreshed.lines.filter((line) => line.kind === "payable");
+  const finished =
+    payable.length === 0 || payable.every((line) => line.status === "transferred" || line.status === "manual_paid");
+  await db.monthPack.update({
+    where: { id: packId },
+    data: { status: finished ? "closed" : "executing" },
+  });
 }
 
 async function markFailed(

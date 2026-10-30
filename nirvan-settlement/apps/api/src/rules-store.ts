@@ -14,6 +14,7 @@ export interface RulePayload {
   notes: string;
   effectiveFrom: string | null;
   rulesVersion: string;
+  sellerPropertyNames: string[];
 }
 
 export function payloadFromConfig(config: AppConfig): RulePayload {
@@ -27,6 +28,7 @@ export function payloadFromConfig(config: AppConfig): RulePayload {
     notes: "",
     effectiveFrom: null,
     rulesVersion: RULES_VERSION,
+    sellerPropertyNames: [...config.webkulPropertyNames],
   };
 }
 
@@ -50,6 +52,9 @@ export function readPayload(value: unknown, fallback: RulePayload): RulePayload 
     notes: typeof raw.notes === "string" ? raw.notes.slice(0, 500) : fallback.notes,
     effectiveFrom: typeof raw.effectiveFrom === "string" && raw.effectiveFrom ? raw.effectiveFrom : null,
     rulesVersion: typeof raw.rulesVersion === "string" && raw.rulesVersion ? raw.rulesVersion : fallback.rulesVersion,
+    sellerPropertyNames: stringList(raw.sellerPropertyNames, fallback.sellerPropertyNames).map((name) =>
+      name.toLowerCase(),
+    ),
   };
 }
 

@@ -29,11 +29,13 @@ export async function ingestShopifyOrder(
     throw new Error(`Order ${order.id} is ${currency || "missing currency"}. Settlement accepts AED only.`);
   }
   const financialStatus = order.financial_status ?? "";
-  if (!PAID_STATUSES.has(financialStatus)) {
-    throw new Error(`Order ${order.id} financial_status is ${financialStatus || "missing"}.`);
-  }
-
   const shopifyOrderId = String(order.id);
+  if (!PAID_STATUSES.has(financialStatus)) {
+    const existing = await db.orderSnapshot.findUnique({ where: { shopifyOrderId } });
+    if (!existing) {
+      throw new Error(`Order ${order.id} financial_status is ${financialStatus || "missing"}.`);
+    }
+  }
   const paidAt = new Date(order.processed_at ?? order.created_at ?? now.toISOString());
   const shippingTotal = roundMoney(
     (order.shipping_lines ?? []).reduce((sum, line) => sum + Number(line.price ?? 0), 0),
@@ -83,7 +85,8 @@ export async function ingestShopifyOrder(
   for (const line of order.line_items ?? []) {
     const shopifyLineId = String(line.id);
     seenLineIds.push(shopifyLineId);
-    await upsertLine(db, ruledConfig, order, line, shopifyOrderId, paidAt, taxesIncluded, rules);
+    const propertyNames = [...rules.sellerPropertyNames, ...config.webkulPropertyNames];
+    await upsertLine(db, ruledConfig, order, line, shopifyOrderId, paidAt, taxesIncluded, rules, propertyNames);
   }
 
   await syncRefunds(db, order, shopifyOrderId);
@@ -108,6 +111,7 @@ async function upsertLine(
   paidAt: Date,
   taxesIncluded: boolean,
   rules: RulePayload,
+  propertyNames: string[] = [],
 ): Promise<void> {
   const own = isPlatformOwn(
     { tags: line.product_tags, id: line.product_id },
@@ -115,7 +119,7 @@ async function upsertLine(
     config.ownProducts,
   );
 
-  const vendorId = own ? null : await resolveVendorId(db, line);
+  const vendorId = own ? null : await resolveVendorId(db, line, propertyNames);
   const quantity = Number(line.quantity ?? 1);
   const gross = roundMoney(Number(line.price ?? 0) * quantity);
   const discount = lineDiscount(line);
@@ -216,8 +220,12 @@ function fulfillmentTime(order: ShopifyOrder, lineId: number | string): Date | n
   return null;
 }
 
-async function resolveVendorId(db: PrismaClient, line: ShopifyLineItem): Promise<string | null> {
-  const seller = resolveSeller(line);
+async function resolveVendorId(
+  db: PrismaClient,
+  line: ShopifyLineItem,
+  propertyNames: string[] = [],
+): Promise<string | null> {
+  const seller = resolveSeller(line, undefined, { propertyNames });
   if (!seller) return null;
   const key = seller.webkulSellerId;
 
@@ -262,6 +270,7 @@ async function resolveVendorId(db: PrismaClient, line: ShopifyLineItem): Promise
       webkulSellerId: key,
       externalKey: key,
       vatRegistered: false,
+      payoutMethod: "stripe_connect",
       active: true,
     },
   });

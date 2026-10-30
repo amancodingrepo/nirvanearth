@@ -6,8 +6,11 @@ import { buildApp } from "../src/server.ts";
 import {
   isValidShopifyDomain,
   verifyShopifyHmac,
+  verifyShopifyWebhookHmac,
   getShopifyAccessToken,
   fetchPaidOrders,
+  nextPageUrl,
+  followOrderPages,
 } from "../src/shopify.ts";
 
 test("Shopify OAuth - domain validation", () => {
@@ -261,4 +264,27 @@ test("Fastify - handles empty JSON body gracefully on POST requests", async () =
   // Since no session cookie is provided, it should reach actorFromRequest and return 401 "Sign in required."
   assert.equal(resEmptyBody.statusCode, 401);
   assert.deepEqual(JSON.parse(resEmptyBody.payload), { error: "Sign in required." });
+});
+
+test("Shopify pagination reads the next link and stops at the page cap", async () => {
+  assert.equal(
+    nextPageUrl('<https://shop.example/orders.json?page_info=abc>; rel="previous", <https://shop.example/orders.json?page_info=def>; rel="next"'),
+    "https://shop.example/orders.json?page_info=def",
+  );
+  assert.equal(nextPageUrl(null), null);
+  const pages = await followOrderPages(
+    { orders: [{ id: 1, currency: "AED" }], link: "page-2" },
+    async () => ({ orders: [{ id: 2, currency: "AED" }, { id: 1, currency: "AED" }], link: "page-3" }),
+    2,
+  );
+  assert.deepEqual(pages.orders.map((order) => order.id), [1, 2]);
+  assert.equal(pages.truncated, true);
+});
+
+test("Shopify webhook HMAC is base64", () => {
+  const secret = "webhook_secret";
+  const body = '{"id":1}';
+  const hmac = createHmac("sha256", secret).update(body, "utf8").digest("base64");
+  assert.equal(verifyShopifyWebhookHmac(body, hmac, secret), true);
+  assert.equal(verifyShopifyWebhookHmac(body, hmac, "other"), false);
 });

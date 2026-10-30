@@ -27,8 +27,9 @@ export async function ensureSettlementInvoice(
     where: { id: input.lineId },
     include: { vendor: true, pack: true, orderLines: true },
   });
-  if (!line?.stripeTransferId) throw new HttpError(409, "A statement is created only after a transfer.");
-  const transferredAt = input.transferredAt ?? new Date();
+  const reference = line?.stripeTransferId || line?.manualReference || "";
+  if (!line || !reference) throw new HttpError(409, "A statement is created only after a transfer or a recorded manual payment.");
+  const transferredAt = input.transferredAt ?? line.manualPaidAt ?? new Date();
   const number = await nextInvoiceNumber(db, line.pack.yearMonth, vendorCode(line.vendor));
   const invoice = await db.settlementInvoice.create({
     data: {
@@ -38,7 +39,7 @@ export async function ensureSettlementInvoice(
       vendorId: line.vendorId,
       amount: line.vendorNetSum,
       currency: "AED",
-      stripeTransferId: line.stripeTransferId,
+      stripeTransferId: reference,
       transferredAt,
     },
   });
@@ -46,7 +47,7 @@ export async function ensureSettlementInvoice(
     invoiceId: invoice.id,
     number,
     settlementLineId: line.id,
-    transferId: line.stripeTransferId,
+    transferId: reference,
   });
   const link = `${config.appUrl.replace(/\/+$/, "")}/api/lines/${line.id}/invoice`;
   const text = [
@@ -54,7 +55,7 @@ export async function ensureSettlementInvoice(
     `Vendor: ${line.vendor.name}`,
     `Period: ${line.pack.yearMonth}`,
     `Net paid: ${formatAed(money(line.vendorNetSum))}`,
-    `Transfer: ${line.stripeTransferId}`,
+    `Reference: ${reference}`,
     `Download: ${link}`,
     FEE_NOTE,
   ].join("\n");
@@ -176,9 +177,10 @@ function renderAdvicePdf(input: {
   doc.moveDown();
   doc.fontSize(13).text(`Net paid: ${formatAed(input.net)}`);
   doc.fontSize(11);
-  doc.text(`Stripe Transfer: ${input.transferId}`);
+  const connectTransfer = input.transferId.startsWith("tr_");
+  doc.text(connectTransfer ? `Stripe Transfer: ${input.transferId}` : `Payment reference: ${input.transferId}`);
   doc.text(`Amount: ${formatAed(input.net)} AED`);
-  doc.text(`Transferred at: ${input.transferredAt.toISOString()}`);
+  doc.text(`${connectTransfer ? "Transferred" : "Recorded"} at: ${input.transferredAt.toISOString()}`);
   doc.moveDown();
   doc.text(FEE_NOTE);
   doc.end();

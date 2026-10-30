@@ -66,11 +66,11 @@ function route() {
 
 function badge(status) {
   const key = String(status || "open");
-  const tone = ["qualified", "approved", "transferred", "closed", "active"].includes(key)
+  const tone = ["qualified", "approved", "transferred", "closed", "active", "manual_paid"].includes(key)
     ? "success"
     : ["blocked", "failed", "held"].includes(key)
       ? "critical"
-      : ["pending_approval", "executing", "draft", "open", "packed"].includes(key)
+      : ["pending_approval", "executing", "draft", "open", "packed", "awaiting_manual_payment"].includes(key)
         ? "warning"
         : "info";
   return `<span class="badge ${tone}">${esc(key.replaceAll("_", " "))}</span>`;
@@ -295,14 +295,14 @@ async function renderPack(me) {
     </div>
     <div class="metrics">
       <div class="metric"><div class="label">Vendor net payable</div><div class="value">${aed(pack.rulePayableTotal ?? pack.payableTotal)}</div>${Math.abs((pack.rulePayableTotal ?? pack.payableTotal) - pack.payableTotal) > 0.001 ? `<div class="muted">Transferred ${aed(pack.payableTotal)}</div>` : ""}</div>
-      <div class="metric"><div class="label">Commission 20%</div><div class="value">${aed(pack.commissionTotal)}</div></div>
+      <div class="metric"><div class="label">Connect payable</div><div class="value">${aed(pack.connectPayableTotal || 0)}</div></div>
+      <div class="metric"><div class="label">Manual bank payable</div><div class="value">${aed(pack.manualPayableTotal || 0)}</div></div>
       <div class="metric"><div class="label">Held, not payable</div><div class="value">${aed(pack.heldTotal)}</div></div>
-      <div class="metric"><div class="label">Vendors in pack</div><div class="value">${pack.lines.length}</div></div>
     </div>
     <div class="actions" style="margin-bottom:16px">
       <button class="secondary" id="submit" type="button" ${canSubmit ? "" : "disabled"}>Submit for approval</button>
       <button class="primary" id="approve" type="button" ${canApprove ? "" : "disabled"}>Approve</button>
-      <button class="primary" id="execute" type="button" ${canExecute ? "" : "disabled"}>Execute transfers</button>
+      <button class="primary" id="execute" type="button" ${canExecute ? "" : "disabled"}>Execute Connect transfers</button>
     </div>
     <p class="msg" id="msg"></p>
     <section class="card">
@@ -325,7 +325,7 @@ async function renderPack(me) {
     try { await api(`/api/packs/${id}/approve`, { method: "POST", body: {} }); await render(); } catch (error) { say(error); }
   });
   app.querySelector("#execute").addEventListener("click", async () => {
-    const ok = await ask("Execute transfers?", "Each approved vendor line is sent once. Running this again will not pay twice.", "Execute");
+    const ok = await ask("Execute Connect transfers?", "Stripe Connect lines are sent once. Manual bank lines stay for Mark paid. Running this again will not pay a Connect line twice.", "Execute");
     if (!ok) return;
     try {
       const result = await api(`/api/packs/${id}/execute`, { method: "POST" });
@@ -334,6 +334,13 @@ async function renderPack(me) {
       if (failed.length) app.querySelector("#msg").textContent = failed.map((item) => `${item.vendorName}: ${item.error}`).join(" · ");
     } catch (error) { say(error); }
   });
+  for (const button of app.querySelectorAll("[data-mark-paid]")) {
+    button.addEventListener("click", async () => {
+      const ok = await ask("Mark manual payment?", "Record that this vendor was paid by bank. This does not create a Stripe Transfer.", "Mark paid");
+      if (!ok) return;
+      try { await api(`/api/lines/${button.dataset.markPaid}/mark-paid`, { method: "POST", body: {} }); await render(); } catch (error) { say(error); }
+    });
+  }
   for (const button of app.querySelectorAll("[data-payout]")) {
     button.addEventListener("click", async () => {
       const ok = await ask("Request bank payout?", "This asks Stripe to pay the connected account out to its bank. It does not send another transfer.", "Request payout");
@@ -361,7 +368,7 @@ function settlementTable(lines, payoutsEnabled) {
               <td>
                 <div class="stack">
                   <strong>${esc(line.vendorName)}</strong>
-                  <span class="muted">${esc(line.feeNotes || "Stripe fees stay with Nirvan Earth")}</span>
+                  <span class="muted">${line.payoutMethod === "manual_bank" ? "Manual bank" : "Stripe Connect"} · ${esc(line.feeNotes || "Stripe fees stay with Nirvan Earth")}</span>
                 </div>
               </td>
               <td>${line.vatRegistered ? badge("vat") : `<span class="muted">No</span>`}</td>
@@ -372,7 +379,7 @@ function settlementTable(lines, payoutsEnabled) {
               <td class="num">${aed(line.shippingSum)}</td>
               <td class="num">${aed(line.ruleNetSum ?? line.vendorNetSum)}${line.ruleNetSum != null && Math.abs(line.ruleNetSum - line.vendorNetSum) > 0.001 ? `<div class="muted">Paid ${aed(line.vendorNetSum)}</div>` : ""}</td>
               <td>${badge(line.status)}${line.bankPayoutStatus ? `<div class="muted">${esc(line.bankPayoutStatus)}</div>` : ""}</td>
-              <td>${line.stripeTransferId ? esc(line.stripeTransferId) : "—"}${line.invoiceNumber ? `<div><a href="/api/lines/${esc(line.id)}/invoice">Download statement</a></div>` : ""}${payoutsEnabled && line.status === "transferred" ? `<div><button type="button" data-payout="${esc(line.id)}">Request bank payout</button></div>` : ""}</td>
+              <td>${line.stripeTransferId ? esc(line.stripeTransferId) : line.manualReference ? esc(line.manualReference) : "—"}${line.invoiceNumber ? `<div><a href="/api/lines/${esc(line.id)}/invoice">Download statement</a></div>` : ""}${line.payoutMethod === "manual_bank" && line.status === "awaiting_manual_payment" ? `<div><button type="button" data-mark-paid="${esc(line.id)}">Mark paid</button></div>` : ""}${payoutsEnabled && line.status === "transferred" ? `<div><button type="button" data-payout="${esc(line.id)}">Request bank payout</button></div>` : ""}</td>
             </tr>
           `).join("")}
         </tbody>
@@ -387,7 +394,7 @@ async function renderOrders(me) {
     <div class="page-head">
       <div>
         <h1>Orders</h1>
-        <p class="page-sub">Lines synced from Shopify. Seller comes from Webkul. Own products are excluded from payout.</p>
+        <p class="page-sub">Paid Shopify orders arrive by webhook. Sync now is the backfill if a webhook is missed. Own products are excluded from payout.</p>
       </div>
       <div class="page-actions">
         <button class="secondary" id="qualify" type="button">Requalify</button>
@@ -492,27 +499,35 @@ async function renderVendors(me) {
     <div class="page-head">
       <div>
         <h1>Vendors</h1>
-        <p class="page-sub">Sellers do not log in here. VAT registered means VAT is taken out of the commission base. Stripe account is the Custom connected account.</p>
+        <p class="page-sub">Sellers do not log in here. New Webkul sellers are created on sync as non-VAT Stripe Connect until you set VAT or manual bank.</p>
       </div>
     </div>
     <section class="card">
       <div class="table-wrap">
         <table>
           <thead>
-            <tr><th>Name</th><th>Webkul id</th><th>Email</th><th>Active</th><th>VAT</th><th>Stripe account</th><th></th></tr>
+            <tr><th>Name</th><th>Webkul id</th><th>Payout</th><th>Email</th><th>Active</th><th>VAT</th><th>Stripe account</th><th>Bank label</th><th>Last 4</th><th></th></tr>
           </thead>
           <tbody>
             ${vendors.map((vendor) => `
               <tr data-id="${esc(vendor.id)}">
-                <td><strong>${esc(vendor.name)}</strong></td>
-                <td>${esc(vendor.webkulSellerId || vendor.externalKey || "—")}</td>
+                <td><input class="name" type="text" value="${esc(vendor.name)}" aria-label="Name" /></td>
+                <td><input class="seller" type="text" value="${esc(vendor.webkulSellerId || vendor.externalKey || "")}" aria-label="Webkul id" /></td>
+                <td>
+                  <select class="method" aria-label="Payout method for ${esc(vendor.name)}">
+                    <option value="stripe_connect" ${vendor.payoutMethod === "manual_bank" ? "" : "selected"}>Stripe Connect</option>
+                    <option value="manual_bank" ${vendor.payoutMethod === "manual_bank" ? "selected" : ""}>Manual bank</option>
+                  </select>
+                </td>
                 <td><input class="email" type="email" value="${esc(vendor.email || "")}" aria-label="Email for ${esc(vendor.name)}" /></td>
                 <td><label class="check"><input class="active" type="checkbox" ${vendor.active ? "checked" : ""} /> Active</label></td>
                 <td><label class="check"><input class="vat" type="checkbox" ${vendor.vatRegistered ? "checked" : ""} /> VAT</label></td>
                 <td><input class="acct" type="text" value="${esc(vendor.stripeAccountId || "")}" placeholder="acct_…" aria-label="Stripe account for ${esc(vendor.name)}" /></td>
+                <td><input class="bank-label" type="text" value="${esc(vendor.bankLabel || "")}" aria-label="Bank label" /></td>
+                <td><input class="bank-last4" type="text" maxlength="4" value="${esc(vendor.bankLast4 || "")}" aria-label="Bank last 4" /></td>
                 <td><button class="secondary save" type="button">Save</button></td>
               </tr>
-            `).join("") || `<tr><td colspan="7"><div class="empty">No vendors yet. They are created when an order sync finds a seller.</div></td></tr>`}
+            `).join("") || `<tr><td colspan="10"><div class="empty">No vendors yet. They are created when an order sync finds a seller.</div></td></tr>`}
           </tbody>
         </table>
       </div>
@@ -522,8 +537,17 @@ async function renderVendors(me) {
       <div class="card-body">
         <form id="new-vendor" class="form-grid">
           <div class="field"><label for="v-name">Name</label><input id="v-name" name="name" required /></div>
+          <div class="field"><label for="v-seller">Webkul id</label><input id="v-seller" name="webkulSellerId" /></div>
           <div class="field"><label for="v-email">Email</label><input id="v-email" name="email" type="email" /></div>
+          <div class="field"><label for="v-method">Payout</label>
+            <select id="v-method" name="payoutMethod">
+              <option value="stripe_connect">Stripe Connect</option>
+              <option value="manual_bank">Manual bank</option>
+            </select>
+          </div>
           <div class="field"><label for="v-acct">Stripe account</label><input id="v-acct" name="stripeAccountId" placeholder="acct_test_…" /></div>
+          <div class="field"><label for="v-bank">Bank label</label><input id="v-bank" name="bankLabel" placeholder="ENBD ··1234" /></div>
+          <div class="field"><label for="v-last4">Last 4</label><input id="v-last4" name="bankLast4" maxlength="4" /></div>
           <label class="check"><input name="vatRegistered" type="checkbox" /> VAT</label>
           <button class="primary" type="submit">Add vendor</button>
         </form>
@@ -554,10 +578,15 @@ async function renderVendors(me) {
         await api(`/api/vendors/${row.dataset.id}`, {
           method: "PATCH",
           body: {
+            name: row.querySelector(".name").value,
+            webkulSellerId: row.querySelector(".seller").value,
             email: row.querySelector(".email").value,
             active: row.querySelector(".active").checked,
             vatRegistered: row.querySelector(".vat").checked,
+            payoutMethod: row.querySelector(".method").value,
             stripeAccountId: row.querySelector(".acct").value,
+            bankLabel: row.querySelector(".bank-label").value,
+            bankLast4: row.querySelector(".bank-last4").value,
           },
         });
         app.querySelector("#msg").textContent = "Saved. Requalify orders before the next pack so VAT is recalculated.";
@@ -574,8 +603,12 @@ async function renderVendors(me) {
         method: "POST",
         body: {
           name: form.name.value,
+          webkulSellerId: form.webkulSellerId.value,
           email: form.email.value,
+          payoutMethod: form.payoutMethod.value,
           stripeAccountId: form.stripeAccountId.value,
+          bankLabel: form.bankLabel.value,
+          bankLast4: form.bankLast4.value,
           vatRegistered: form.vatRegistered.checked,
         },
       });

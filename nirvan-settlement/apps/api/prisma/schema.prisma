@@ -24,6 +24,9 @@ model Vendor {
   webkulSellerId    String?  @unique @map("webkul_seller_id")
   externalKey       String?  @unique @map("external_key")
   stripeAccountId   String?  @map("stripe_account_id")
+  payoutMethod      String   @default("stripe_connect") @map("payout_method")
+  bankLabel         String?  @map("bank_label")
+  bankLast4         String?  @map("bank_last4")
   active            Boolean  @default(true)
   createdAt         DateTime @default(now()) @map("created_at")
   lines             OrderLine[]
@@ -135,7 +138,11 @@ model SettlementLine {
   orderLineCount     Int      @default(0) @map("order_line_count")
   feeNotes           String?  @map("fee_notes")
   status             String
+  payoutMethod       String   @default("stripe_connect") @map("payout_method")
   stripeTransferId   String?  @map("stripe_transfer_id")
+  manualPaidAt       DateTime? @map("manual_paid_at")
+  manualReference    String?  @map("manual_reference")
+  manualPaidBy       String?  @map("manual_paid_by")
   pack               MonthPack @relation(fields: [monthPackId], references: [id])
   vendor             Vendor   @relation(fields: [vendorId], references: [id])
   orderLines         OrderLine[]
@@ -242,6 +249,15 @@ model BankPayoutAttempt {
 
   @@index([settlementLineId])
   @@map("bank_payout_attempts")
+}
+
+model SyncState {
+  id           String    @id
+  shop         String
+  lastSyncedAt DateTime? @map("last_synced_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  @@map("sync_state")
 }
 
 model ShopSession {

@@ -23,6 +23,7 @@ export interface AppConfig {
   allowLive: boolean;
   enablePayoutTrigger: boolean;
   stripeWebhookSecret: string;
+  webkulPropertyNames: string[];
 }
 
 function splitList(value: string | undefined): string[] {
@@ -89,6 +90,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     allowLive,
     enablePayoutTrigger: env.ENABLE_PAYOUT_TRIGGER === "true",
     stripeWebhookSecret: env.STRIPE_WEBHOOK_SECRET ?? "",
+    webkulPropertyNames: splitList(env.WEBKUL_PROPERTY_NAMES).map((name) => name.toLowerCase()),
   };
 }
 
