@@ -118,6 +118,24 @@ a { color: inherit; }
 h1 { font-size: 20px; font-weight: 650; letter-spacing: -0.02em; margin: 0; }
 .page-sub { margin: 4px 0 0; color: var(--sub); }
 .page-actions, .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.month-switch { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; margin-bottom: 16px; }
+.month-nav { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.month-nav strong { min-width: 180px; text-align: center; font-size: 16px; font-weight: 650; }
+.month-picks { display: flex; flex-wrap: wrap; gap: 8px; }
+.order-months { padding: 12px 12px 0; }
+button.month-pick {
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 8px;
+  background: var(--surface);
+  border: 0;
+  box-shadow: inset 0 0 0 1px #b5b5b5, var(--shadow);
+  font-weight: 550;
+}
+button.month-pick[aria-pressed="true"] { background: var(--fill); color: white; box-shadow: none; }
+.banner .secondary { margin-left: 8px; vertical-align: middle; }
+.propose .form-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); margin-bottom: 8px; }
+.propose .field input { width: 100%; }
 
 button.primary, button.secondary {
   height: 32px;
@@ -307,6 +325,7 @@ a.rowlink:hover { text-decoration: underline; }
 }
 .modal-card h2 { margin: 0 0 8px; font-size: 16px; }
 .modal-card p { margin: 0 0 16px; color: var(--sub); }
+.modal-card input { width: 100%; height: 32px; border: 0; border-radius: 8px; box-shadow: inset 0 0 0 1px #8a8a8a; padding: 0 10px; margin-bottom: 8px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
 .drawer-back {

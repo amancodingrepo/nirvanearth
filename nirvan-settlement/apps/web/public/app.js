@@ -23,19 +23,19 @@ const STATUS_LABEL = {
   packed: "In settlement",
   pending_approval: "Needs approval",
   approved: "Approved",
-  draft: "Draft",
+  draft: "Needs review",
   executing: "Paying",
   transferred: "Paid",
-  closed: "Closed",
+  closed: "Finished",
   failed: "Failed",
   active: "Active",
   manual_paid: "Paid by bank",
   awaiting_manual_payment: "Awaiting bank",
-  manual_bank: "Manual bank",
-  stripe_connect: "Stripe Connect",
+  manual_bank: "Bank transfer",
+  stripe_connect: "Stripe",
   vat: "VAT",
   ready: "Ready",
-  missing: "Missing",
+  missing: "Not set up",
   own: "Own sale",
   test: "Test",
   simulated: "Practice",
@@ -45,8 +45,8 @@ const ACTION_LABEL = {
   "pack.generated": "Settlement created",
   "pack.submitted": "Settlement sent for approval",
   "pack.approved": "Settlement approved",
-  "transfer.executed": "Stripe Connect payment sent",
-  "transfer.failed": "Stripe Connect payment failed",
+  "transfer.executed": "Stripe vendor paid",
+  "transfer.failed": "Stripe vendor payment failed",
   "manual_payment.recorded": "Manual bank payment recorded",
   "manual_payment.notified": "Approver told about a manual bank payment",
   "invoice.generated": "Payment advice created",
@@ -76,8 +76,81 @@ function when(value) {
   return new Date(value).toLocaleString("en-AE", { timeZone: "Asia/Dubai", dateStyle: "medium", timeStyle: "short" });
 }
 
-function dubaiMonth() {
-  return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Dubai" }).slice(0, 7);
+function dubaiMonth(date = new Date()) {
+  if (date == null || date === "") return "";
+  const value = new Date(date);
+  if (Number.isNaN(value.getTime())) return "";
+  return value.toLocaleDateString("en-CA", { timeZone: "Asia/Dubai" }).slice(0, 7);
+}
+
+function shiftMonth(yearMonth, delta) {
+  const [year, month] = String(yearMonth || "").split("-").map(Number);
+  if (!year || !month) return dubaiMonth();
+  const shifted = new Date(Date.UTC(year, month - 1 + delta, 1));
+  return `${shifted.getUTCFullYear()}-${String(shifted.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+function isYearMonth(value) {
+  return /^\d{4}-(0[1-9]|1[0-2])$/.test(String(value || ""));
+}
+
+function chosenMonth(name) {
+  const value = route().query.get(name);
+  if (!isYearMonth(value) || value > dubaiMonth()) return dubaiMonth();
+  return value;
+}
+
+function recentMonths(count = 6) {
+  const now = dubaiMonth();
+  const months = [];
+  for (let i = 0; i < count; i += 1) months.push(shiftMonth(now, -i));
+  return months;
+}
+
+function shortMonth(yearMonth) {
+  const [year, month] = String(yearMonth || "").split("-").map(Number);
+  if (!year || !month) return yearMonth || "—";
+  return new Date(Date.UTC(year, month - 1, 1)).toLocaleDateString("en-AE", {
+    timeZone: "Asia/Dubai",
+    month: "short",
+    year: "numeric",
+  });
+}
+
+function monthSwitchHtml(selected) {
+  const prev = shiftMonth(selected, -1);
+  const next = shiftMonth(selected, 1);
+  const laterBlocked = next > dubaiMonth();
+  return `
+    <div class="month-switch">
+      <div class="month-nav">
+        <button class="secondary" type="button" data-month="${esc(prev)}">Previous month</button>
+        <strong>${esc(monthLabel(selected))}</strong>
+        <button class="secondary" type="button" data-month="${esc(next)}" ${laterBlocked ? "disabled" : ""}>Next month</button>
+      </div>
+      <div class="month-picks" role="group" aria-label="Choose a month">
+        ${recentMonths().map((month) => `<button class="month-pick" type="button" data-month="${esc(month)}" aria-pressed="${month === selected ? "true" : "false"}">${esc(shortMonth(month))}</button>`).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function goMonth(hash) {
+  location.hash = hash;
+}
+
+function holdReason(reason) {
+  const labels = {
+    platform_own: "This is a Nirvan Earth product. It is listed under Own sales and is not paid to a vendor.",
+    no_vendor: "No vendor is attached to this product.",
+    cancelled: "The order was cancelled.",
+    refunded: "The order was refunded.",
+    unpaid: "The order is not paid.",
+    not_fulfilled: "The order has not been delivered yet.",
+    return_window: "The 14-day return window is still open.",
+    open_adjustment: "A refund or dispute is still open.",
+  };
+  return labels[reason] || String(reason || "").replaceAll("_", " ");
 }
 
 function monthLabel(yearMonth) {
@@ -157,9 +230,7 @@ function testBanner(dash, health) {
   const stripeTest = dash.mode === "stripe-test" || health?.stripe?.mode === "stripe-test";
   const liveBlocked = health?.liveBlocked !== false;
   if (!stripeTest && !liveBlocked) return "";
-  const text = dash.mode === "simulated"
-    ? "Test mode. No Stripe key is set, and live transfers are blocked. Pay records a practice result and does not move money."
-    : "Test mode. Stripe is in test mode and live transfers are blocked. No real customer money moves.";
+  const text = "Practice mode. Paying here does not move real money.";
   return `<div class="mode-banner" role="status">${esc(text)}</div>`;
 }
 
@@ -200,7 +271,6 @@ function shell(me, dash, health, body) {
           <div class="crumb"><strong>${esc(titles[current] || "Home")}</strong></div>
           <div class="top-meta">
             <span>${esc(me.email)}</span>
-            <span class="muted">${esc(dash.shop)}</span>
           </div>
         </header>
         ${testBanner(dash, health)}
@@ -208,6 +278,39 @@ function shell(me, dash, health, body) {
       </div>
     </div>
   `;
+}
+
+function nextStep(pack, me) {
+  if (pack.status === "draft") {
+    return {
+      title: "Check the amounts, then send for approval",
+      text: "Nobody is paid until this is sent, approved, and then paid.",
+    };
+  }
+  if (pack.status === "pending_approval") {
+    return me.approver
+      ? { title: "This is waiting for your approval", text: "Approving does not pay anyone. Paying is the step after that." }
+      : { title: "Waiting for the approver", text: "Only the approver can approve and pay." };
+  }
+  if (pack.status === "approved" || pack.status === "executing") {
+    return {
+      title: "Pay the Stripe vendors",
+      text: "That button pays only vendors who are paid through Stripe. For a bank vendor, pay them yourself and then choose I have paid the bank.",
+    };
+  }
+  if (pack.status === "closed") {
+    return { title: "This month is finished", text: "Paid amounts stay as they are. You can still download a payment advice." };
+  }
+  return { title: "Review this settlement", text: "Check each vendor before you continue." };
+}
+
+function actionHint(status, approver) {
+  if (status === "draft") return "Approve and Pay stay off until you send this for approval.";
+  if (status === "pending_approval" && approver) return "Send is already done. Pay stays off until you approve.";
+  if (status === "pending_approval") return "An approver has to approve this before anyone is paid.";
+  if (status === "approved" || status === "executing") return "Send and Approve are already done. Bank vendors are marked paid in the list below.";
+  if (status === "closed") return "This settlement is finished, so it cannot be paid again.";
+  return "";
 }
 
 function ask(title, text, okLabel) {
@@ -218,6 +321,7 @@ function ask(title, text, okLabel) {
       <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title">
         <h2 id="modal-title">${esc(title)}</h2>
         <p>${esc(text)}</p>
+        <div id="modal-extra"></div>
         <div class="modal-actions">
           <button class="secondary" type="button" id="modal-cancel">Cancel</button>
           <button class="primary" type="button" id="modal-ok">${esc(okLabel)}</button>
@@ -232,6 +336,33 @@ function ask(title, text, okLabel) {
   });
 }
 
+function askReference() {
+  return new Promise((resolve) => {
+    const node = document.createElement("div");
+    node.className = "modal";
+    node.innerHTML = `
+      <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+        <h2 id="modal-title">Record the bank payment</h2>
+        <p>This notes that you already paid the vendor from the bank. It does not send a Stripe payment.</p>
+        <div class="field">
+          <label for="modal-ref">Bank reference</label>
+          <input id="modal-ref" placeholder="Transfer number, if you have one" autocomplete="off" />
+        </div>
+        <p class="page-sub">Leave this blank and a reference is written for you.</p>
+        <div class="modal-actions">
+          <button class="secondary" type="button" id="modal-cancel">Cancel</button>
+          <button class="primary" type="button" id="modal-ok">Save payment</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(node);
+    const close = (value) => { node.remove(); resolve(value); };
+    node.querySelector("#modal-cancel").addEventListener("click", () => close(null));
+    node.querySelector("#modal-ok").addEventListener("click", () => close(node.querySelector("#modal-ref").value.trim()));
+    node.querySelector("#modal-ref").focus();
+  });
+}
+
 function loginView(error = "") {
   app.innerHTML = `
     <div class="login-screen">
@@ -241,7 +372,7 @@ function loginView(error = "") {
           <div><strong>Nirvan Earth</strong><span>Settlements</span></div>
         </div>
         <h1>Log in</h1>
-        <p class="page-sub">For the Nirvan Earth approver. Vendors do not sign in here.</p>
+        <p class="page-sub">For the person who approves settlements. Vendors do not sign in here.</p>
         <div class="field">
           <label for="email">Email</label>
           <input id="email" name="email" type="email" autocomplete="username" value="admin@nirvanearth.com" required />
@@ -315,7 +446,7 @@ function helpRules() {
 async function renderHome(me) {
   const { dash, health } = await chrome(me);
   const [{ packs }, { vendors }] = await Promise.all([api("/api/packs"), api("/api/vendors")]);
-  const month = dubaiMonth();
+  const month = chosenMonth("month");
   const pack = packs.find((item) => item.yearMonth === month);
   const missing = vendors.filter((vendor) => vendor.active !== false && !vendorPayoutReady(vendor));
   const attention = [];
@@ -331,7 +462,7 @@ async function renderHome(me) {
   }
   if (!pack) {
     attention.push({
-      href: "#/settlements",
+      href: `#/settlements?month=${encodeURIComponent(month)}`,
       title: `No settlement for ${monthLabel(month)}`,
       text: "Create it when the orders for this month are ready to review.",
     });
@@ -340,28 +471,38 @@ async function renderHome(me) {
   } else if (pack.status === "pending_approval") {
     attention.push({ href: `#/settlements/${pack.id}`, title: `${monthLabel(month)} needs approval`, text: `Payable ${aed(pack.payableTotal)}. Nothing is paid until you approve and then pay.` });
   } else if (pack.status === "approved" || pack.status === "executing") {
-    attention.push({ href: `#/settlements/${pack.id}`, title: `${monthLabel(month)} can be paid`, text: "Stripe Connect is paid from here. Manual bank is marked paid after you send it." });
+    attention.push({ href: `#/settlements/${pack.id}`, title: `${monthLabel(month)} can be paid`, text: "Stripe vendors are paid from here. Bank vendors are marked paid after you send the bank payment." });
   }
   if (dash.blocked) {
     attention.push({
       href: "#/orders?view=held",
-      title: `${dash.blocked} order line${dash.blocked === 1 ? "" : "s"} held`,
-      text: "Held lines are not included in the amount you pay.",
+      title: `${dash.blocked} product${dash.blocked === 1 ? "" : "s"} held`,
+      text: "Held products are not included in the amount you pay.",
+    });
+  }
+  const previous = shiftMonth(dubaiMonth(), -1);
+  const previousPack = packs.find((item) => item.yearMonth === previous);
+  if (month === dubaiMonth() && previousPack && previousPack.status !== "closed") {
+    attention.push({
+      href: `#/settlements/${previousPack.id}`,
+      title: `${monthLabel(previous)} is not finished`,
+      text: "Open it to review, approve, or pay what is still outstanding.",
     });
   }
   app.innerHTML = shell(me, dash, health, `
     <div class="page-head">
       <div>
         <h1>${esc(monthLabel(month))}</h1>
-        <p class="page-sub">What can be paid to vendors this month.</p>
+        <p class="page-sub">What can be paid to vendors. Choose another month if this one is empty.</p>
       </div>
-      ${pack ? `<a class="secondary" href="#/settlements/${esc(pack.id)}">Open settlement</a>` : `<a class="secondary" href="#/settlements">Create settlement</a>`}
+      ${pack ? `<a class="secondary" href="#/settlements/${esc(pack.id)}">Open settlement</a>` : `<a class="secondary" href="#/settlements?month=${esc(month)}">Create settlement</a>`}
     </div>
+    ${monthSwitchHtml(month)}
     <div class="metrics">
       <div class="metric"><div class="label">Payable</div><div class="value">${pack ? aed(pack.payableTotal) : "—"}</div></div>
       <div class="metric"><div class="label">Held</div><div class="value">${pack ? aed(pack.heldTotal) : "—"}</div></div>
       <div class="metric"><div class="label">Settlement</div><div class="value">${pack ? badge(pack.status) : badge("missing")}</div></div>
-      <div class="metric"><div class="label">Orders in the ledger</div><div class="value">${dash.orders}</div></div>
+      <div class="metric"><div class="label">All orders on file</div><div class="value">${dash.orders}</div></div>
     </div>
     <section class="card">
       <div class="card-head">Needs attention</div>
@@ -373,6 +514,9 @@ async function renderHome(me) {
     ${helpRules()}
   `);
   bindChrome();
+  for (const button of app.querySelectorAll("[data-month]")) {
+    button.addEventListener("click", () => goMonth(`#/?month=${encodeURIComponent(button.dataset.month)}`));
+  }
 }
 
 function settlementSteps(status) {
@@ -388,30 +532,31 @@ function settlementSteps(status) {
   return `<ol class="steps">
     ${item("review", "1 · Review", status === "draft" ? "Check the amounts" : "Amounts checked")}
     ${item("approve", "2 · Approve", status === "pending_approval" ? "Waiting for approval" : current === "review" ? "After review" : "Approved")}
-    ${item("pay", "3 · Pay", current === "done" ? "Finished" : "Stripe Connect, then mark bank payments")}
+    ${item("pay", "3 · Pay", current === "done" ? "Finished" : "Pay Stripe vendors, then mark bank payments")}
   </ol>`;
 }
 
 async function renderSettlements(me) {
   const { dash, health } = await chrome(me);
   const { packs } = await api("/api/packs");
-  const month = dubaiMonth();
+  const month = chosenMonth("month");
+  const existing = packs.find((pack) => pack.yearMonth === month);
   app.innerHTML = shell(me, dash, health, `
     <div class="page-head">
       <div>
         <h1>Settlements</h1>
-        <p class="page-sub">One settlement for each Dubai month. Review it, approve it, then pay.</p>
+        <p class="page-sub">One settlement for each month. Review it, approve it, then pay.</p>
       </div>
-      <form id="gen" class="page-actions">
-        <input id="yearMonth" value="${esc(month)}" aria-label="Month" style="width:120px" />
-        <button class="primary" type="submit">Create settlement</button>
-      </form>
     </div>
+    <form id="gen">
+      ${monthSwitchHtml(month)}
+      <button class="primary" type="submit">${existing ? `Open ${esc(monthLabel(month))}` : `Create ${esc(monthLabel(month))}`}</button>
+    </form>
     <p class="msg" id="msg"></p>
     <section class="card">
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Month</th><th>Status</th><th class="num">Payable</th><th class="num">Held</th><th class="num">Stripe Connect</th><th class="num">Manual bank</th><th>Pay from</th><th></th></tr></thead>
+          <thead><tr><th>Month</th><th>Status</th><th class="num">To pay</th><th class="num">Waiting</th><th class="num">Pay by Stripe</th><th class="num">Pay by bank</th><th>Pay on</th><th></th></tr></thead>
           <tbody>
             ${packs.map((pack) => `<tr>
               <td><a class="rowlink" href="#/settlements/${esc(pack.id)}">${esc(monthLabel(pack.yearMonth))}</a></td>
@@ -430,12 +575,19 @@ async function renderSettlements(me) {
   `);
   bindChrome();
   const say = (error) => { app.querySelector("#msg").textContent = error?.message || error || ""; };
+  for (const button of app.querySelectorAll("[data-month]")) {
+    button.addEventListener("click", () => goMonth(`#/settlements?month=${encodeURIComponent(button.dataset.month)}`));
+  }
   app.querySelector("#gen").addEventListener("submit", async (event) => {
     event.preventDefault();
+    if (existing) {
+      location.hash = `#/settlements/${existing.id}`;
+      return;
+    }
     try {
       const result = await api("/api/packs/generate", {
         method: "POST",
-        body: { yearMonth: app.querySelector("#yearMonth").value },
+        body: { yearMonth: month },
       });
       location.hash = `#/settlements/${result.pack.id}`;
       await render();
@@ -446,7 +598,7 @@ async function renderSettlements(me) {
 }
 
 function payRows(lines, payoutsEnabled) {
-  if (!lines.length) return `<div class="empty">None.</div>`;
+  if (!lines.length) return `<div class="empty">Nobody in this list.</div>`;
   return `
     <div class="table-wrap">
       <table>
@@ -462,21 +614,22 @@ function payRows(lines, payoutsEnabled) {
               <td class="wrap">
                 <strong>${esc(line.vendorName)}</strong>
                 <div>${line.vatRegistered ? badge("vat") : `<span class="badge">No VAT</span>`}</div>
-                <div class="muted">Base ${aed(line.commissionBaseSum)} · Commission ${aed(line.commissionSum)} · Shipping ${aed(line.shippingSum)}</div>
+                <div class="muted">Before commission ${aed(line.commissionBaseSum)} · Nirvan Earth keeps ${aed(line.commissionSum)} · Delivery ${aed(line.shippingSum)}</div>
               </td>
               <td class="wrap">
                 ${badge(line.payoutMethod === "manual_bank" ? "manual_bank" : "stripe_connect")}
-                <div class="muted">${line.payoutMethod === "manual_bank" ? "Bank payment" : (line.stripeAccountId ? esc(line.stripeAccountId) : "No Stripe account")}</div>
+                <div class="muted">${line.payoutMethod === "manual_bank" ? "You pay this vendor from the bank" : (line.stripeAccountId ? `Stripe account saved` : "Add a Stripe account before paying")}</div>
+                ${line.stripeAccountId ? `<div class="muted">Account ${esc(line.stripeAccountId)}</div>` : ""}
               </td>
               <td class="num">${line.orderLineCount}</td>
               <td class="num">${aed(line.ruleNetSum ?? line.vendorNetSum)}${line.ruleNetSum != null && Math.abs(line.ruleNetSum - line.vendorNetSum) > 0.001 ? `<div class="muted">Already paid ${aed(line.vendorNetSum)}</div>` : ""}</td>
               <td>${badge(line.status)}</td>
               <td class="wrap">
-                ${line.invoiceNumber ? `<div><a href="/api/lines/${esc(line.id)}/invoice">Download statement</a></div>` : ""}
-                ${line.payoutMethod === "manual_bank" && line.status === "awaiting_manual_payment" ? `<div><button class="secondary" type="button" data-mark-paid="${esc(line.id)}">Mark paid</button></div>` : ""}
-                ${line.manualReference ? `<div class="muted">Reference ${esc(line.manualReference)}</div>` : ""}
-                ${line.stripeTransferId ? `<div class="muted">Stripe ${esc(line.stripeTransferId)}</div>` : ""}
-                ${payoutsEnabled && line.status === "transferred" ? `<div><button class="secondary" type="button" data-payout="${esc(line.id)}">Request bank payout</button></div>` : ""}
+                ${line.invoiceNumber ? `<div><a href="/api/lines/${esc(line.id)}/invoice">Download payment advice</a></div>` : ""}
+                ${line.payoutMethod === "manual_bank" && line.status === "awaiting_manual_payment" ? `<div><button class="secondary" type="button" data-mark-paid="${esc(line.id)}">I have paid the bank</button></div>` : ""}
+                ${line.manualReference ? `<div class="muted">Bank reference ${esc(line.manualReference)}</div>` : ""}
+                ${line.stripeTransferId ? `<div class="muted">Stripe reference ${esc(line.stripeTransferId)}</div>` : ""}
+                ${payoutsEnabled && line.status === "transferred" ? `<div><button class="secondary" type="button" data-payout="${esc(line.id)}">Send this to their bank</button></div>` : ""}
                 ${line.bankPayoutStatus ? `<div class="muted">${esc(line.bankPayoutStatus)}</div>` : ""}
               </td>
             </tr>
@@ -499,47 +652,53 @@ async function renderPack(me) {
   const canSubmit = pack.status === "draft";
   const canApprove = pack.status === "pending_approval" && me.approver;
   const canExecute = (pack.status === "approved" || pack.status === "executing") && me.approver;
-  const fee = pack.lines.find((line) => line.feeNotes)?.feeNotes
-    || "Nirvan Earth bears customer checkout gateway fees inside its commission. Connect transfer fees and bank payout fees are recorded separately and are not deducted from vendor net.";
+  const step = nextStep(pack, me);
   app.innerHTML = shell(me, dash, health, `
     <div class="page-head">
       <div>
         <p class="page-sub"><a href="#/settlements">Settlements</a></p>
         <h1>${esc(monthLabel(pack.yearMonth))}</h1>
-        <p class="page-sub">Review the amounts, approve them, then pay. ${me.approver ? "" : "Only the approver can approve and pay."}</p>
+        <p class="page-sub">${me.approver ? "Three steps: review, approve, then pay." : "Only the approver can approve and pay."}</p>
       </div>
       <div>${badge(pack.status)}</div>
     </div>
     ${settlementSteps(pack.status)}
+    <div class="banner info">
+      <div>
+        <strong>${esc(step.title)}</strong>
+        ${esc(step.text)}
+      </div>
+    </div>
     <div class="banner ${payout.ready ? "info" : "warning"}">
       <div>
-        <strong>${payout.ready ? "The pay date has passed" : "Before the pay date"}</strong>
-        Pay on or after ${esc(payout.label)}. You can approve before that date. In test mode, Pay records the test transfer without waiting.
+        <strong>${payout.ready ? "The pay date has passed" : "Too early to pay"}</strong>
+        Pay on or after ${esc(payout.label)}. You can approve before that day. In practice mode, Pay does not wait and does not move real money.
       </div>
     </div>
     <div class="metrics">
-      <div class="metric"><div class="label">Payable to vendors</div><div class="value">${aed(pack.rulePayableTotal ?? pack.payableTotal)}</div>${Math.abs((pack.rulePayableTotal ?? pack.payableTotal) - pack.payableTotal) > 0.001 ? `<div class="muted">Already transferred ${aed(pack.payableTotal)}</div>` : ""}</div>
-      <div class="metric"><div class="label">Stripe Connect</div><div class="value">${aed(pack.connectPayableTotal || 0)}</div></div>
-      <div class="metric"><div class="label">Manual bank</div><div class="value">${aed(pack.manualPayableTotal || 0)}</div></div>
-      <div class="metric"><div class="label">Held</div><div class="value">${aed(pack.heldTotal)}</div></div>
+      <div class="metric"><div class="label">To pay vendors</div><div class="value">${aed(pack.rulePayableTotal ?? pack.payableTotal)}</div>${Math.abs((pack.rulePayableTotal ?? pack.payableTotal) - pack.payableTotal) > 0.001 ? `<div class="muted">Already paid ${aed(pack.payableTotal)}</div>` : ""}</div>
+      <div class="metric"><div class="label">Pay by Stripe</div><div class="value">${aed(pack.connectPayableTotal || 0)}</div></div>
+      <div class="metric"><div class="label">Pay by bank</div><div class="value">${aed(pack.manualPayableTotal || 0)}</div></div>
+      <div class="metric"><div class="label">Waiting</div><div class="value">${aed(pack.heldTotal)}</div></div>
     </div>
-    <div class="banner info"><div><strong>Fees stay with Nirvan Earth</strong>${esc(fee)} Platform commission on payable lines is ${aed(pack.commissionTotal || 0)}.</div></div>
-    <div class="actions" style="margin-bottom:16px">
+    <div class="banner info"><div><strong>Card fees stay with Nirvan Earth</strong>They are not taken off the vendor amount. Nirvan Earth's commission on what you can pay is ${aed(pack.commissionTotal || 0)}.</div></div>
+    <div class="actions" style="margin-bottom:8px">
       <button class="secondary" id="submit" type="button" ${canSubmit ? "" : "disabled"}>Send for approval</button>
       <button class="primary" id="approve" type="button" ${canApprove ? "" : "disabled"}>Approve</button>
-      <button class="primary" id="execute" type="button" ${canExecute ? "" : "disabled"}>Pay Stripe Connect</button>
+      <button class="primary" id="execute" type="button" ${canExecute ? "" : "disabled"}>Pay Stripe vendors</button>
     </div>
+    <p class="page-sub" style="margin-bottom:16px">${esc(actionHint(pack.status, me.approver))}</p>
     <p class="msg" id="msg"></p>
     <section class="card">
-      <div class="card-head">Stripe Connect <span class="muted">Paid from the platform balance when you choose Pay</span></div>
+      <div class="card-head">Pay by Stripe <span class="muted">Use Pay Stripe vendors. This does not pay bank vendors.</span></div>
       ${payRows(connect, dash.payoutTriggerEnabled)}
     </section>
     <section class="card">
-      <div class="card-head">Manual bank <span class="muted">Not sent to Stripe. Mark paid after you pay the bank.</span></div>
+      <div class="card-head">Pay by bank <span class="muted">Pay the vendor yourself, then choose I have paid the bank.</span></div>
       ${payRows(manual, false)}
     </section>
     <section class="card">
-      <div class="card-head">Held <span class="muted">Not part of this payment</span></div>
+      <div class="card-head">Waiting <span class="muted">Not part of this payment</span></div>
       ${payRows(held, false)}
     </section>
   `);
@@ -549,12 +708,12 @@ async function renderPack(me) {
     try { await api(`/api/packs/${id}/submit`, { method: "POST" }); await render(); } catch (error) { say(error); }
   });
   app.querySelector("#approve").addEventListener("click", async () => {
-    const ok = await ask("Approve this settlement?", `Approve ${aed(pack.payableTotal)} for ${monthLabel(pack.yearMonth)}. Nothing is paid until you choose Pay.`, "Approve");
+    const ok = await ask("Approve this settlement?", `Approve ${aed(pack.payableTotal)} for ${monthLabel(pack.yearMonth)}. Nobody is paid until you choose Pay Stripe vendors.`, "Approve");
     if (!ok) return;
     try { await api(`/api/packs/${id}/approve`, { method: "POST", body: {} }); await render(); } catch (error) { say(error); }
   });
   app.querySelector("#execute").addEventListener("click", async () => {
-    const ok = await ask("Pay Stripe Connect?", "Each Connect vendor is paid once. Manual bank vendors are not paid here. Choosing Pay again will not pay a Connect vendor twice.", "Pay Stripe Connect");
+    const ok = await ask("Pay the Stripe vendors?", "Each Stripe vendor is paid once. Bank vendors are not paid here. Choosing this again does not pay a Stripe vendor twice.", "Pay Stripe vendors");
     if (!ok) return;
     try {
       const result = await api(`/api/packs/${id}/execute`, { method: "POST" });
@@ -565,14 +724,14 @@ async function renderPack(me) {
   });
   for (const button of app.querySelectorAll("[data-mark-paid]")) {
     button.addEventListener("click", async () => {
-      const ok = await ask("Mark this bank payment?", "This records that you paid the vendor from the bank. It does not create a Stripe transfer.", "Mark paid");
-      if (!ok) return;
-      try { await api(`/api/lines/${button.dataset.markPaid}/mark-paid`, { method: "POST", body: {} }); await render(); } catch (error) { say(error); }
+      const reference = await askReference();
+      if (reference == null) return;
+      try { await api(`/api/lines/${button.dataset.markPaid}/mark-paid`, { method: "POST", body: { reference } }); await render(); } catch (error) { say(error); }
     });
   }
   for (const button of app.querySelectorAll("[data-payout]")) {
     button.addEventListener("click", async () => {
-      const ok = await ask("Request bank payout?", "This asks Stripe to pay the connected account out to its bank. It does not send another transfer.", "Request payout");
+      const ok = await ask("Send this Stripe payment to their bank?", "The vendor was already paid inside Stripe. This asks Stripe to send that money to the vendor's bank. It does not pay them again.", "Send to their bank");
       if (!ok) return;
       try { await api(`/api/lines/${button.dataset.payout}/payout`, { method: "POST" }); await render(); } catch (error) { say(error); }
     });
@@ -596,7 +755,7 @@ function orderPairs(lines) {
     const search = `${line.orderNumber || ""} ${line.shopifyOrderId} ${line.title} ${line.vendorName || ""}`.toLowerCase();
     const flags = orderFlags(line);
     return `
-      <tr data-line="${esc(line.id)}" data-payable="${flags.payable}" data-held="${flags.held}" data-own="${flags.own}" data-search="${esc(search)}">
+      <tr data-line="${esc(line.id)}" data-payable="${flags.payable}" data-held="${flags.held}" data-own="${flags.own}" data-month="${esc(dubaiMonth(line.paidAt))}" data-search="${esc(search)}">
         <td><button class="ghost" type="button" data-toggle="${esc(line.id)}" aria-expanded="false">Details</button></td>
         <td>${esc(line.orderNumber || line.shopifyOrderId)}</td>
         <td class="wrap">${esc(line.title)}</td>
@@ -608,37 +767,48 @@ function orderPairs(lines) {
         <td colspan="6">
           <div class="facts">
             <div><span>Quantity</span><strong>${line.quantity}</strong></div>
-            <div><span>Gross</span><strong>${aed(line.gross)}</strong></div>
+            <div><span>Sold for</span><strong>${aed(line.gross)}</strong></div>
             <div><span>Discount</span><strong>${aed(line.discount)}</strong></div>
             <div><span>Vendor VAT</span><strong>${line.vatRegistered ? aed(line.vendorVat) : "No VAT"}</strong></div>
-            <div><span>Delivery allowance</span><strong>${aed(line.deliveryAllowance || 0)}</strong><span>${Number(line.deliveryAllowance) > 0 ? "Paid to vendor" : esc(line.deliveryAllocation || "none")}</span></div>
-            <div><span>Checkout shipping</span><strong>${aed(line.orderShippingTotal)}</strong><span>Platform, not a vendor entitlement</span></div>
-            <div><span>Own-product delivery</span><strong>${aed(line.expectedOwnDelivery || 0)}</strong><span>AED 19 under 199, else free. Own subtotal ${aed(line.ownProductSubtotal || 0)}</span></div>
-            <div><span>Commission base</span><strong>${aed(line.commissionBase)}</strong></div>
-            <div><span>Commission</span><strong>${aed(line.commissionAmount)}</strong></div>
+            <div><span>Delivery in the price</span><strong>${aed(line.deliveryAllowance || 0)}</strong><span>${Number(line.deliveryAllowance) > 0 ? "Paid to the vendor" : "None on this product"}</span></div>
+            <div><span>Delivery the customer paid</span><strong>${aed(line.orderShippingTotal)}</strong><span>Kept by Nirvan Earth</span></div>
+            <div><span>Nirvan Earth delivery</span><strong>${aed(line.expectedOwnDelivery || 0)}</strong><span>AED 19 when Nirvan Earth products are under AED 199, otherwise free</span></div>
+            <div><span>Amount the 20% uses</span><strong>${aed(line.commissionBase)}</strong></div>
+            <div><span>Nirvan Earth keeps</span><strong>${aed(line.commissionAmount)}</strong></div>
             <div><span>Delivered</span><strong>${when(line.fulfilledAt)}</strong></div>
-            <div><span>Return window ends</span><strong>${when(line.returnWindowEndsAt)}</strong></div>
+            <div><span>Can be paid after</span><strong>${when(line.returnWindowEndsAt)}</strong></div>
           </div>
-          ${line.blockReason ? `<p class="page-sub">Held because: ${esc(line.blockReason)}</p>` : ""}
+          ${line.blockReason ? `<p class="page-sub">${esc(holdReason(line.blockReason))}</p>` : ""}
         </td>
       </tr>
     `;
   }).join("");
 }
 
+function ordersHash(view, month) {
+  const params = new URLSearchParams();
+  if (view && view !== "all") params.set("view", view);
+  if (month) params.set("month", month);
+  const query = params.toString();
+  return query ? `#/orders?${query}` : "#/orders";
+}
+
 async function renderOrders(me) {
   const { dash, health } = await chrome(me);
   const { lines } = await api("/api/orders");
   const view = route().query.get("view") || "all";
+  const month = route().query.get("month") || "";
+  const months = [...new Set(lines.map((line) => dubaiMonth(line.paidAt)).filter(Boolean))].sort().reverse();
+  if (isYearMonth(month) && !months.includes(month)) months.unshift(month);
   const tab = (key, label) => `<button type="button" data-tab="${key}" aria-selected="${view === key ? "true" : "false"}">${label}</button>`;
   app.innerHTML = shell(me, dash, health, `
     <div class="page-head">
       <div>
         <h1>Orders</h1>
-        <p class="page-sub">Orders come from Shopify automatically. You do not type them in here.</p>
+        <p class="page-sub">Paid orders arrive from Shopify. Ready to pay can go into a settlement. Waiting is not ready yet. Nirvan Earth products are not paid to a vendor.</p>
       </div>
       <div class="page-actions">
-        <button class="secondary" id="qualify" type="button">Check again</button>
+        <button class="secondary" id="qualify" type="button">Check which orders are ready</button>
         <button class="secondary" id="sync" type="button">Refresh from Shopify</button>
       </div>
     </div>
@@ -646,19 +816,23 @@ async function renderOrders(me) {
     <section class="card">
       <div class="tabs" role="tablist">
         ${tab("all", "All")}
-        ${tab("payable", "Payable")}
-        ${tab("held", "Held")}
-        ${tab("own", "Own")}
+        ${tab("payable", "Ready to pay")}
+        ${tab("held", "Waiting")}
+        ${tab("own", "Nirvan Earth")}
+      </div>
+      <div class="month-picks order-months" role="group" aria-label="Choose a month">
+        <button class="month-pick" type="button" data-order-month="" aria-pressed="${month ? "false" : "true"}">All months</button>
+        ${months.map((item) => `<button class="month-pick" type="button" data-order-month="${esc(item)}" aria-pressed="${month === item ? "true" : "false"}">${esc(shortMonth(item))}</button>`).join("")}
       </div>
       <div class="filters">
         <input id="filter" placeholder="Search order, product, or vendor" aria-label="Search orders" />
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th></th><th>Order</th><th>Product</th><th>Vendor</th><th class="num">Vendor amount</th><th>Status</th></tr></thead>
+          <thead><tr><th></th><th>Order</th><th>Product</th><th>Vendor</th><th class="num">Paid to vendor</th><th>Status</th></tr></thead>
           <tbody id="order-rows">
             ${orderPairs(lines) || `<tr data-static="empty"><td colspan="6"><div class="empty">No orders yet. They appear after Shopify sends a paid order.</div></td></tr>`}
-            <tr id="filter-empty" hidden><td colspan="6"><div class="empty">Nothing in this view.</div></tr>
+            <tr id="filter-empty" hidden><td colspan="6"><div class="empty">Nothing matches this month or search.</div></tr>
           </tbody>
         </table>
       </div>
@@ -668,11 +842,14 @@ async function renderOrders(me) {
   const say = (error) => { app.querySelector("#msg").textContent = error?.message || error || ""; };
   const applyFilter = () => {
     const selected = app.querySelector('.tabs button[aria-selected="true"]')?.dataset.tab || "all";
+    const picked = app.querySelector(".order-months [aria-pressed='true']")?.dataset.orderMonth || "";
     const query = app.querySelector("#filter").value.trim().toLowerCase();
     let visible = 0;
     for (const row of app.querySelectorAll("#order-rows tr[data-line]")) {
       const text = row.dataset.search || "";
-      const show = (selected === "all" || row.dataset[selected] === "true") && text.includes(query);
+      const show = (selected === "all" || row.dataset[selected] === "true")
+        && (!picked || row.dataset.month === picked)
+        && text.includes(query);
       row.hidden = !show;
       if (show) visible += 1;
       const detail = app.querySelector(`tr[data-detail="${row.dataset.line}"]`);
@@ -688,8 +865,17 @@ async function renderOrders(me) {
     button.addEventListener("click", () => {
       for (const other of app.querySelectorAll(".tabs button")) other.setAttribute("aria-selected", "false");
       button.setAttribute("aria-selected", "true");
-      const next = button.dataset.tab === "all" ? "#/orders" : `#/orders?view=${button.dataset.tab}`;
-      history.replaceState(null, "", next);
+      const picked = app.querySelector(".order-months [aria-pressed='true']")?.dataset.orderMonth || "";
+      history.replaceState(null, "", ordersHash(button.dataset.tab, picked));
+      applyFilter();
+    });
+  }
+  for (const button of app.querySelectorAll("[data-order-month]")) {
+    button.addEventListener("click", () => {
+      for (const other of app.querySelectorAll("[data-order-month]")) other.setAttribute("aria-pressed", "false");
+      button.setAttribute("aria-pressed", "true");
+      const selected = app.querySelector('.tabs button[aria-selected="true"]')?.dataset.tab || "all";
+      history.replaceState(null, "", ordersHash(selected, button.dataset.orderMonth || ""));
       applyFilter();
     });
   }
@@ -707,7 +893,7 @@ async function renderOrders(me) {
   app.querySelector("#sync").addEventListener("click", async () => {
     try {
       const result = await api("/api/sync", { method: "POST" });
-      flash = `Shopify refresh finished. ${result.imported} orders, ${result.linesUpserted} lines.`;
+      flash = `Shopify refresh finished. ${result.imported} orders updated.`;
       await render();
     } catch (error) { say(error); }
   });
@@ -715,9 +901,9 @@ async function renderOrders(me) {
     try {
       const result = await api("/api/requalify", { method: "POST" });
       const held = result.transferredUnchanged?.length
-        ? ` ${result.transferredUnchanged.length} already paid line(s) kept the paid amount.`
+        ? ` ${result.transferredUnchanged.length} already paid product${result.transferredUnchanged.length === 1 ? "" : "s"} kept the paid amount.`
         : "";
-      flash = `Checked ${result.updated} line(s) again.${held}`;
+      flash = `Checked ${result.updated} product${result.updated === 1 ? "" : "s"}.${held}`;
       await render();
     } catch (error) { say(error); }
   });
@@ -747,7 +933,7 @@ async function renderVendors(me) {
     <div class="page-head">
       <div>
         <h1>Vendors</h1>
-        <p class="page-sub">New Webkul sellers are created on sync as non-VAT Stripe Connect. Set VAT and payout before the first pack. A full IBAN is not stored.</p>
+        <p class="page-sub">Sellers arrive with their Shopify orders. Set VAT and how they are paid before the first settlement. The full bank account number is not stored.</p>
       </div>
       ${advice ? "" : `<button class="primary" id="add-vendor" type="button">Add vendor</button>`}
     </div>
@@ -770,7 +956,7 @@ async function renderVendors(me) {
       <section class="card">
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Name</th><th>Webkul id</th><th>VAT</th><th>Payout</th><th>Status</th><th></th></tr></thead>
+            <thead><tr><th>Name</th><th>Seller id</th><th>VAT</th><th>How they are paid</th><th>Status</th><th></th></tr></thead>
             <tbody>
               ${vendors.map((vendor) => `
                 <tr>
@@ -797,7 +983,7 @@ async function renderVendors(me) {
         <section class="drawer-section">
           <h3>Profile</h3>
           <div class="field"><label for="v-name">Name</label><input id="v-name" name="name" required /></div>
-          <div class="field"><label for="v-seller">Webkul id</label><input id="v-seller" name="webkulSellerId" /></div>
+          <div class="field"><label for="v-seller">Seller id</label><input id="v-seller" name="webkulSellerId" /></div>
           <div class="field"><label for="v-email">Email</label><input id="v-email" name="email" type="email" /></div>
           <label class="check"><input id="v-active" name="active" type="checkbox" checked /> Active</label>
         </section>
@@ -808,18 +994,20 @@ async function renderVendors(me) {
         </section>
         <section class="drawer-section">
           <h3>Payout</h3>
-          <div class="field"><label for="v-method">Method</label>
+          <div class="field"><label for="v-method">How they are paid</label>
             <select id="v-method" name="payoutMethod">
-              <option value="stripe_connect">Stripe Connect</option>
-              <option value="manual_bank">Manual bank</option>
+              <option value="stripe_connect">Stripe</option>
+              <option value="manual_bank">Bank transfer</option>
             </select>
           </div>
           <div id="payout-connect">
             <div class="field"><label for="v-acct">Stripe account</label><input id="v-acct" name="stripeAccountId" placeholder="acct_…" autocomplete="off" /></div>
+            <p class="page-sub">Use this when Stripe pays the vendor. The account starts with acct_.</p>
           </div>
           <div id="payout-manual" hidden>
-            <div class="field"><label for="v-bank">Bank label</label><input id="v-bank" name="bankLabel" placeholder="ENBD" autocomplete="off" /></div>
-            <div class="field"><label for="v-last4">Last 4</label><input id="v-last4" name="bankLast4" inputmode="numeric" maxlength="4" autocomplete="off" /></div>
+            <div class="field"><label for="v-bank">Bank name</label><input id="v-bank" name="bankLabel" placeholder="Bank name" autocomplete="off" /></div>
+            <div class="field"><label for="v-last4">Last 4 digits</label><input id="v-last4" name="bankLast4" inputmode="numeric" maxlength="4" autocomplete="off" /></div>
+            <p class="page-sub">You pay this vendor yourself, then mark the settlement as paid.</p>
           </div>
         </section>
         <p class="msg" id="msg"></p>
@@ -928,7 +1116,7 @@ async function renderAudit(me) {
         ${events.map((event) => `
           <li>
             <time>${when(event.createdAt)}</time>
-            <div><strong>${esc(activitySentence(event))}</strong><div class="muted">${esc(event.actorEmail || "System")}</div></div>
+            <div><strong>${esc(activitySentence(event))}</strong><div class="muted">${esc(actorName(event.actorEmail))}</div></div>
           </li>
         `).join("") || `<li><div class="empty">Nothing recorded yet.</div></li>`}
       </ol>
@@ -947,6 +1135,17 @@ async function renderAudit(me) {
   bindChrome();
 }
 
+function actorName(email) {
+  const labels = {
+    "shopify-webhook": "Shopify",
+    schedule: "Automatic check",
+    system: "Automatic",
+    shopify_oauth: "Shopify",
+    "stripe-webhook": "Stripe",
+  };
+  return labels[email] || email || "Automatic";
+}
+
 function healthCard(title, ok, body) {
   return `<section class="card"><h2>${esc(title)} ${ok ? badge("ready") : badge("missing")}</h2>${body}</section>`;
 }
@@ -960,35 +1159,34 @@ async function renderHealth(me) {
     <div class="page-head">
       <div>
         <h1>System</h1>
-        <p class="page-sub">Whether the pieces this screen depends on are available. Rules in use: ${esc(health.rulesVersion || "—")}.</p>
+        <p class="page-sub">Check this only when orders stop arriving or a payment cannot be sent. Rules in use: ${esc(health.rulesVersion || "—")}.</p>
       </div>
     </div>
     <div class="health-grid">
-      ${healthCard("Database", health.db.ok, `<p>${health.db.ok ? "The ledger can be read and saved." : "The ledger cannot be reached."}</p><p class="msg">${esc(health.db.error || "")}</p>`)}
+      ${healthCard("Records", health.db.ok, `<p>${health.db.ok ? "Orders and settlements can be saved." : "Orders and settlements cannot be saved right now."}</p><p class="msg">${esc(health.db.error || "")}</p>`)}
       ${healthCard("Shopify", shopifyOk, `
-        <p>${shopifyOk ? "Connected. Paid orders can arrive on their own." : "Not connected. New orders will not arrive."}</p>
-        <p class="muted">${esc(health.shopify?.shop || dash.shop)}</p>
+        <p>${shopifyOk ? "Connected. New paid orders arrive on their own." : "Not connected. New orders will not arrive."}</p>
+        <p class="muted">Shop ${esc(health.shopify?.shop || dash.shop)}</p>
         ${shopifyOk ? "" : `<p><a href="${esc(health.shopify?.authPath || "/shopify/auth")}">Connect Shopify</a></p>`}
       `)}
       ${healthCard("Stripe", health.stripe.ok, `
-        <p>${health.stripe.ok ? esc(health.stripe.mode === "stripe-test" ? "Stripe test" : health.stripe.mode) : "Stripe did not answer."}</p>
-        <p>Available ${health.stripe.availableAed == null ? "—" : aed(health.stripe.availableAed)}</p>
-        <p>${health.liveBlocked || health.stripe.liveTransfersBlocked ? `<span class="badge warning">Live transfers blocked</span>` : `<span class="badge success">Live transfers allowed</span>`}</p>
+        <p>${health.stripe.ok ? (health.stripe.mode === "stripe-test" ? "Practice mode. Stripe answered." : "Stripe answered.") : "Stripe did not answer."}</p>
+        <p>Available to pay ${health.stripe.availableAed == null ? "—" : aed(health.stripe.availableAed)}</p>
+        <p>${health.liveBlocked || health.stripe.liveTransfersBlocked ? `<span class="badge warning">Real payouts are off</span>` : `<span class="badge success">Real payouts are on</span>`}</p>
         <p class="msg">${esc(health.stripe.error || "")}</p>
       `)}
-      ${healthCard("Order notices", shopifyOk, `
-        <p>Automatic orders use orders/paid, orders/updated, and refunds/create.</p>
-        <p class="muted">${shopifyOk ? "Shopify is connected, so those notices can be accepted when this app is on https." : "Connect Shopify before order notices can arrive."} This screen does not list Shopify delivery attempts.</p>
+      ${healthCard("New orders", shopifyOk, `
+        <p>${shopifyOk ? "Paid, changed, and refunded orders are picked up automatically." : "Connect Shopify before new orders can arrive."}</p>
       `)}
       ${healthCard("Email", emailOk, `
-        <p>${email.provider === "resend" ? "Resend is configured." : "Messages are saved in Activity and are not emailed."}</p>
+        <p>${email.provider === "resend" ? "Approval emails can be sent." : "Messages are saved in Activity and are not emailed."}</p>
         <p>To ${esc(email.notifyEmail || dash.notifyEmail || "—")}</p>
-        <p class="muted">${email.fromConfigured ? "From address is set." : "From address is not a real mailbox yet."}</p>
+        <p class="muted">${email.fromConfigured ? "The sending address is set." : "The sending address is not a real mailbox yet."}</p>
       `)}
       <section class="card">
-        <h2>Sellers in the ledger ${badge(health.webkul && health.webkul.sellersInLedger ? "ready" : "missing")}</h2>
-        <p>${health.webkul && health.webkul.sellersInLedger ? health.webkul.sellersInLedger : "None stored"}</p>
-        <p class="muted">Webkul does not have its own connection here. Sellers are recognised from the Shopify order.</p>
+        <h2>Sellers saved ${badge(health.webkul && health.webkul.sellersInLedger ? "ready" : "missing")}</h2>
+        <p>${health.webkul && health.webkul.sellersInLedger ? health.webkul.sellersInLedger : "None yet"}</p>
+        <p class="muted">A seller is saved from the Shopify order. There is no separate seller login.</p>
       </section>
     </div>
   `);
@@ -997,21 +1195,28 @@ async function renderHealth(me) {
 
 async function renderOwner(me) {
   const { dash, health } = await chrome(me);
-  const period = route().query.get("period") || dubaiMonth();
+  const period = chosenMonth("period");
   const report = await api(`/api/reports/owner?period=${encodeURIComponent(period)}`);
+  let earlier = null;
+  if (!report.lineCount) {
+    const previous = shiftMonth(period, -1);
+    try {
+      const previousReport = await api(`/api/reports/owner?period=${encodeURIComponent(previous)}`);
+      if (previousReport.lineCount) earlier = previousReport;
+    } catch {
+      earlier = null;
+    }
+  }
   app.innerHTML = shell(me, dash, health, `
     <div class="page-head">
       <div>
         <h1>Own sales</h1>
-        <p class="page-sub">Nirvan Earth products and gift hampers. This is not a vendor payout and has no Stripe transfer.</p>
+        <p class="page-sub">Nirvan Earth products and gift hampers. These are not paid to a vendor.</p>
       </div>
-      <a class="secondary" href="/api/reports/owner?period=${esc(period)}&format=csv">Download CSV</a>
+      <a class="secondary" href="/api/reports/owner?period=${esc(period)}&format=csv">Download list</a>
     </div>
-    <form id="period-form" class="page-actions" style="margin-bottom:16px">
-      <label for="period">Month</label>
-      <input id="period" value="${esc(period)}" aria-label="Month" style="width:120px" />
-      <button class="secondary" type="submit">Show month</button>
-    </form>
+    ${monthSwitchHtml(period)}
+    ${earlier ? `<div class="banner info"><div><strong>${esc(monthLabel(earlier.period))} has ${earlier.lineCount} own sale${earlier.lineCount === 1 ? "" : "s"}</strong>${esc(monthLabel(period))} has none. The total in ${esc(monthLabel(earlier.period))} is ${aed(earlier.gross)}. <button class="secondary" type="button" id="show-earlier">Show ${esc(monthLabel(earlier.period))}</button></div></div>` : ""}
     <div class="metrics">
       <div class="metric"><div class="label">Month</div><div class="value" style="font-size:18px">${esc(monthLabel(report.period || period))}</div></div>
       <div class="metric"><div class="label">Gross</div><div class="value">${aed(report.gross)}</div></div>
@@ -1023,16 +1228,18 @@ async function renderOwner(me) {
         <table>
           <thead><tr><th>Order</th><th>Product</th><th class="num">Gross</th><th class="num">Discount</th><th class="num">Tax</th></tr></thead>
           <tbody>
-            ${(report.lines || []).map((line) => `<tr><td>${esc(line.orderNumber)}</td><td class="wrap">${esc(line.title)}</td><td class="num">${aed(line.gross)}</td><td class="num">${aed(line.discount)}</td><td class="num">${aed(line.tax)}</td></tr>`).join("") || `<tr><td colspan="5"><div class="empty">No own-product sales in this month.</div></td></tr>`}
+            ${(report.lines || []).map((line) => `<tr><td>${esc(line.orderNumber)}</td><td class="wrap">${esc(line.title)}</td><td class="num">${aed(line.gross)}</td><td class="num">${aed(line.discount)}</td><td class="num">${aed(line.tax)}</td></tr>`).join("") || `<tr><td colspan="5"><div class="empty">No Nirvan Earth sales in ${esc(monthLabel(period))}.</div></td></tr>`}
           </tbody>
         </table>
       </div>
     </section>
   `);
   bindChrome();
-  app.querySelector("#period-form").addEventListener("submit", (event) => {
-    event.preventDefault();
-    location.hash = `#/owner?period=${encodeURIComponent(app.querySelector("#period").value)}`;
+  for (const button of app.querySelectorAll("[data-month]")) {
+    button.addEventListener("click", () => goMonth(`#/owner?period=${encodeURIComponent(button.dataset.month)}`));
+  }
+  app.querySelector("#show-earlier")?.addEventListener("click", () => {
+    goMonth(`#/owner?period=${encodeURIComponent(earlier.period)}`);
   });
 }
 
@@ -1064,7 +1271,7 @@ async function renderRules(me) {
     </div>
     <section class="card">
       <div class="card-body">
-        <p>Embedded delivery allowance is ${payload.excludeDeliveryAllowanceFromCommissionBase === false ? "inside" : "left out of"} the commission base and is paid to the vendor. Checkout shipping on Nirvan Earth products is separate: AED 19 when the own-product subtotal is under AED 199, free at AED 199 or more, once per order. Third-party lines add no extra delivery charge.</p>
+        <p>Delivery already included in a product price is paid to the vendor and is not part of the commission. Delivery a customer pays on a Nirvan Earth product stays with Nirvan Earth: AED 19 when those products are under AED 199, and free from AED 199. Other vendors' products do not add that charge.</p>
         <p class="muted">Own-product tags: ${esc((payload.platformOwnTags || []).join(", ") || "—")}</p>
         <p class="muted">Own-product names: ${esc((payload.platformOwnVendorNames || []).join(", ") || "—")}</p>
       </div>
@@ -1072,22 +1279,23 @@ async function renderRules(me) {
     <details class="fold">
       <summary>Propose a new version</summary>
       <form id="rule-form" class="propose">
-        <div class="filters">
-          <input name="versionLabel" value="${esc(payload.rulesVersion || "2026-11-11")}" aria-label="Version label" />
-          <input name="commissionRate" value="${esc(payload.commissionRate ?? 0.2)}" aria-label="Commission rate" />
-          <input name="returnWindowDays" value="${esc(payload.returnWindowDays ?? 14)}" aria-label="Return window days" />
+        <div class="form-grid">
+          <div class="field"><label for="rule-version">Name for this version</label><input id="rule-version" name="versionLabel" value="${esc(payload.rulesVersion || "2026-11-11")}" /></div>
+          <div class="field"><label for="rule-rate">Commission percent</label><input id="rule-rate" name="commissionRate" value="${esc(Math.round(Number(payload.commissionRate ?? 0.2) * 1000) / 10)}" inputmode="decimal" /></div>
+          <div class="field"><label for="rule-window">Return window, in days</label><input id="rule-window" name="returnWindowDays" value="${esc(payload.returnWindowDays ?? 14)}" inputmode="numeric" /></div>
         </div>
-        <div class="filters">
-          <input name="platformOwnTags" value="${esc((payload.platformOwnTags || []).join(", "))}" aria-label="Own product tags" style="min-width:240px" />
-          <input name="platformOwnVendorNames" value="${esc((payload.platformOwnVendorNames || []).join(", "))}" aria-label="Own vendor names" style="min-width:240px" />
+        <div class="form-grid" style="margin-top:12px">
+          <div class="field"><label for="rule-tags">Own-product tags</label><input id="rule-tags" name="platformOwnTags" value="${esc((payload.platformOwnTags || []).join(", "))}" /></div>
+          <div class="field"><label for="rule-names">Own-product vendor names</label><input id="rule-names" name="platformOwnVendorNames" value="${esc((payload.platformOwnVendorNames || []).join(", "))}" /></div>
         </div>
+        <p class="page-sub">Type 20 for a 20% commission. Separate tags and names with commas.</p>
         <label class="check"><input type="checkbox" name="includeVendorVatInNet" ${payload.includeVendorVatInNet === false ? "" : "checked"} /> Add vendor VAT back into the vendor amount</label>
         <label class="check"><input type="checkbox" name="excludeDeliveryAllowanceFromCommissionBase" ${payload.excludeDeliveryAllowanceFromCommissionBase === false ? "" : "checked"} /> Leave delivery allowance out of the commission base</label>
-        <div class="filters">
-          <input name="effectiveFrom" value="${esc(payload.effectiveFrom || "")}" aria-label="Effective from" placeholder="Starts YYYY-MM-DD" />
-          <input name="notes" value="${esc(payload.notes || "")}" aria-label="Notes" placeholder="Why this change" style="min-width:280px" />
+        <div class="form-grid" style="margin-top:12px">
+          <div class="field"><label for="rule-from">Starts on</label><input id="rule-from" name="effectiveFrom" type="date" value="${esc(String(payload.effectiveFrom || "").slice(0, 10))}" /></div>
+          <div class="field"><label for="rule-notes">Why this change</label><input id="rule-notes" name="notes" value="${esc(payload.notes || "")}" /></div>
         </div>
-        <div class="page-actions" style="margin-top:12px"><button class="primary" type="submit">Save proposal</button></div>
+        <div class="page-actions" style="margin-top:12px"><button class="primary" type="submit">Save this change</button></div>
         <p class="msg" id="msg"></p>
       </form>
     </details>
@@ -1121,7 +1329,7 @@ async function renderRules(me) {
     const form = event.currentTarget;
     const body = {
       versionLabel: form.versionLabel.value,
-      commissionRate: Number(form.commissionRate.value),
+      commissionRate: Number(form.commissionRate.value) / 100,
       returnWindowDays: Number(form.returnWindowDays.value),
       platformOwnTags: form.platformOwnTags.value.split(",").map((item) => item.trim()).filter(Boolean),
       platformOwnVendorNames: form.platformOwnVendorNames.value.split(",").map((item) => item.trim()).filter(Boolean),
