@@ -47,7 +47,9 @@ model OrderSnapshot {
   gateway            String?
   taxesIncluded      Boolean   @default(false) @map("taxes_included")
   shippingTotal      Decimal   @default(0) @map("shipping_total") @db.Decimal(12, 2)
-  shippingAllocation String    @default("unassigned") @map("shipping_allocation")
+  shippingAllocation String    @default("platform") @map("shipping_allocation")
+  ownProductSubtotal Decimal   @default(0) @map("own_product_subtotal") @db.Decimal(12, 2)
+  expectedOwnDelivery Decimal  @default(0) @map("expected_own_delivery") @db.Decimal(12, 2)
   rawJson            Json      @map("raw_json")
   createdAt          DateTime  @default(now()) @map("created_at")
   lines              OrderLine[]

@@ -1,7 +1,7 @@
 import { roundMoney, sellingAfterDiscount } from "./money.ts";
 
-/** Client lock dated 28 Oct 2026. See docs/CALCULATION_RULES.md. */
-export const RULES_VERSION = "2026-10-28";
+/** Client lock dated 11 Nov 2026. See docs/CALCULATION_RULES.md. */
+export const RULES_VERSION = "2026-11-11";
 
 export const DEFAULT_COMMISSION_RATE = 0.2;
 
@@ -37,8 +37,8 @@ export interface CommissionInput {
   shippingAllocation?: ShippingAllocation;
   /**
    * Agreed delivery allowance already included in the discounted product price.
-   * Always removed from the commission base. Added to vendor entitlement only when
-   * `deliveryAllocation` is `vendor`. Default allocation is `unassigned` (not paid).
+   * Removed from the commission base. From 11 Nov 2026 a positive allowance is
+   * allocated to the vendor. `platform` and `unassigned` are not paid to the platform.
    */
   deliveryAllowance?: number;
   deliveryAllocation?: DeliveryAllocation;
@@ -73,6 +73,19 @@ function allocation(value: ShippingAllocation | undefined): ShippingAllocation {
   return "unassigned";
 }
 
+/**
+ * 11 Nov 2026 lock: a positive embedded allowance belongs to the vendor.
+ * A zero allowance keeps the requested flag and adds nothing to vendor net.
+ * Separate checkout shipping is not an embedded allowance and is not passed here.
+ */
+export function lockDeliveryAllocation(
+  amount: number,
+  requested: DeliveryAllocation | undefined,
+): DeliveryAllocation {
+  if (roundMoney(amount) > 0) return "vendor";
+  return allocation(requested);
+}
+
 export function calculateCommission(input: CommissionInput): CommissionResult {
   const gross = roundMoney(input.gross);
   const discount = roundMoney(input.discount);
@@ -80,7 +93,7 @@ export function calculateCommission(input: CommissionInput): CommissionResult {
   const shippingAmount = roundMoney(input.shippingAmount ?? 0);
   const shippingAllocation = allocation(input.shippingAllocation);
   const deliveryAllowance = roundMoney(input.deliveryAllowance ?? 0);
-  const deliveryAllocation = allocation(input.deliveryAllocation);
+  const deliveryAllocation = lockDeliveryAllocation(deliveryAllowance, input.deliveryAllocation);
   const vatRegistered = input.vatRegistered !== false;
   const displayedVat = input.isPlatformOwn || !vatRegistered ? 0 : roundMoney(input.vendorVat ?? 0);
   const taxesIncluded = input.taxesIncluded !== false;
@@ -230,6 +243,7 @@ export interface DeliverySignal {
  * Reads an included delivery allowance from Shopify line properties.
  * The amount is the line total in AED, not a per-unit figure.
  * Missing or non-numeric values fall back to 0 and `unassigned`.
+ * A positive amount is allocated to the vendor even if the property still says `unassigned` or `platform`.
  */
 export function parseDeliveryAllowance(line: {
   properties?: Array<{ name?: string | null; value?: string | number | null }> | null;
@@ -255,5 +269,9 @@ export function parseDeliveryAllowance(line: {
   if (amount == null) {
     return { amount: 0, allocation: "unassigned", source: "default" };
   }
-  return { amount, allocation: sawAllocation ? allocation : "unassigned", source: "property" };
+  return {
+    amount,
+    allocation: lockDeliveryAllocation(amount, sawAllocation ? allocation : "unassigned"),
+    source: "property",
+  };
 }

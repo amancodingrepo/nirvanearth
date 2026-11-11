@@ -18,6 +18,7 @@ process.env.ADMIN_PASSWORD = "nirvan-test-only";
 process.env.SESSION_SECRET = "test-secret";
 process.env.APPROVER_EMAILS = "admin@nirvanearth.com";
 process.env.STRIPE_SECRET_KEY = "";
+process.env.RESEND_API_KEY = "";
 process.env.SHOPIFY_ADMIN_TOKEN = "";
 process.env.APP_URL = "http://localhost:3000";
 

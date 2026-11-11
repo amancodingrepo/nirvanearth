@@ -1,6 +1,7 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
 import {
   calculateCommission,
+  expectedOwnProductDeliveryAed,
   isPlatformOwn,
   parseDeliveryAllowance,
   qualifyLine,
@@ -66,7 +67,9 @@ export async function ingestShopifyOrder(
       gateway: order.gateway ?? null,
       taxesIncluded,
       shippingTotal: dec(shippingTotal),
-      shippingAllocation: "unassigned",
+      shippingAllocation: "platform",
+      ownProductSubtotal: dec(0),
+      expectedOwnDelivery: dec(0),
       rawJson: order as unknown as Prisma.InputJsonValue,
     },
     update: {
@@ -77,6 +80,7 @@ export async function ingestShopifyOrder(
       gateway: order.gateway ?? null,
       taxesIncluded,
       shippingTotal: dec(shippingTotal),
+      shippingAllocation: "platform",
       rawJson: order as unknown as Prisma.InputJsonValue,
     },
   });
@@ -92,12 +96,25 @@ export async function ingestShopifyOrder(
   await syncRefunds(db, order, shopifyOrderId);
   await syncSyntheticAdjustments(db, order, shopifyOrderId);
   await refreshLineQualification(db, ruledConfig, shopifyOrderId, now, rules);
+  const ownDelivery = await recordOwnProductDelivery(db, shopifyOrderId);
 
   await recordAudit(db, "order.ingested", actorEmail, {
     shopifyOrderId,
     lines: seenLineIds.length,
     shippingTotal,
+    ownProductSubtotal: ownDelivery.ownProductSubtotal,
+    expectedOwnDelivery: ownDelivery.expectedOwnDelivery,
+    shippingAllocation: "platform",
   });
+  if (Math.abs(shippingTotal - ownDelivery.expectedOwnDelivery) > 0.001) {
+    await recordAudit(db, "order.shipping.review", actorEmail, {
+      shopifyOrderId,
+      checkoutShipping: shippingTotal,
+      expectedOwnDelivery: ownDelivery.expectedOwnDelivery,
+      ownProductSubtotal: ownDelivery.ownProductSubtotal,
+      note: "Checkout shipping stays with Nirvan Earth. It is not vendor entitlement. Own products under AED 199 expect AED 19 once. Third-party lines expect no extra delivery charge.",
+    });
+  }
 
   return { shopifyOrderId, lineCount: seenLineIds.length };
 }
@@ -199,6 +216,28 @@ async function upsertLine(
     });
   }
 
+}
+
+async function recordOwnProductDelivery(
+  db: PrismaClient,
+  shopifyOrderId: string,
+): Promise<{ ownProductSubtotal: number; expectedOwnDelivery: number }> {
+  const lines = await db.orderLine.findMany({ where: { shopifyOrderId } });
+  const ownProductSubtotal = roundMoney(
+    lines
+      .filter((line) => line.isPlatformOwn)
+      .reduce((sum, line) => sum + Number(line.gross) - Number(line.discount), 0),
+  );
+  const expectedOwnDelivery = expectedOwnProductDeliveryAed(ownProductSubtotal);
+  await db.orderSnapshot.update({
+    where: { shopifyOrderId },
+    data: {
+      shippingAllocation: "platform",
+      ownProductSubtotal: dec(ownProductSubtotal),
+      expectedOwnDelivery: dec(expectedOwnDelivery),
+    },
+  });
+  return { ownProductSubtotal, expectedOwnDelivery };
 }
 
 function lineDiscount(line: ShopifyLineItem): number {
@@ -375,9 +414,9 @@ type StoredLine = Prisma.OrderLineGetPayload<{
   include: { adjustments: true; vendor: true; order: true; settlementLine: true };
 }>;
 
-function settlementWasTransferred(line: { status: string; stripeTransferId: string | null } | null): boolean {
+function settlementAmountIsFrozen(line: { status: string; stripeTransferId: string | null } | null): boolean {
   if (!line) return false;
-  return line.status === "transferred" || Boolean(line.stripeTransferId);
+  return line.status === "transferred" || line.status === "manual_paid" || Boolean(line.stripeTransferId);
 }
 
 function recalculateStoredLine(line: StoredLine, payload: RulePayload, now: Date) {
@@ -471,6 +510,7 @@ export interface RequalifyTransferredNote {
   ruleNet: number;
   delta: number;
   stripeTransferId: string | null;
+  settlementPaidSum: number;
 }
 
 /**
@@ -493,11 +533,11 @@ export async function requalifyLines(
 
   for (const line of lines) {
     const { money, qualification } = recalculateStoredLine(line, payload, now);
-    const transferred = settlementWasTransferred(line.settlementLine);
+    const frozen = settlementAmountIsFrozen(line.settlementLine);
     const previousNet = moneyOf(line.vendorNet);
     const ruleNet = money.vendorNet;
-    const paidNet = line.settlementLine ? moneyOf(line.settlementLine.vendorNetSum) : previousNet;
-    const keepPacked = line.status === "packed" || transferred;
+    const settlementPaidSum = line.settlementLine ? moneyOf(line.settlementLine.vendorNetSum) : previousNet;
+    const keepPacked = line.status === "packed" || frozen;
 
     await db.orderLine.update({
       where: { id: line.id },
@@ -519,15 +559,16 @@ export async function requalifyLines(
 
     if (Math.abs(previousNet - ruleNet) > 0.001) updated += 1;
 
-    if (transferred && Math.abs(paidNet - ruleNet) > 0.001) {
+    if (frozen && Math.abs(previousNet - ruleNet) > 0.001) {
       const note: RequalifyTransferredNote = {
         shopifyOrderId: line.shopifyOrderId,
         shopifyLineId: line.shopifyLineId,
         title: line.title,
-        paidNet,
+        paidNet: previousNet,
         ruleNet,
-        delta: roundMoney(ruleNet - paidNet),
+        delta: roundMoney(ruleNet - previousNet),
         stripeTransferId: line.settlementLine?.stripeTransferId ?? null,
+        settlementPaidSum,
       };
       transferredUnchanged.push(note);
       await recordAudit(db, "line.requalify.transferred_unchanged", actorEmail, note);
@@ -535,7 +576,7 @@ export async function requalifyLines(
   }
 
   const settlements = await db.settlementLine.findMany({
-    where: { stripeTransferId: null, NOT: { status: "transferred" } },
+    where: { stripeTransferId: null, status: { notIn: ["transferred", "manual_paid"] } },
     include: { orderLines: true },
   });
   for (const settlement of settlements) {

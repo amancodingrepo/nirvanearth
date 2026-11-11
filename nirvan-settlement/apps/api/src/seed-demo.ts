@@ -143,7 +143,7 @@ export async function runSeedDemo(db: PrismaClient, config: AppConfig) {
           properties: [
             { name: "webkul_seller_id", value: "desert" },
             { name: "included_delivery_allowance", value: "10" },
-            { name: "delivery_allocation", value: "unassigned" },
+            { name: "delivery_allocation", value: "vendor" },
           ],
         },
       ],

@@ -22,6 +22,7 @@ process.env.SESSION_SECRET = "test-secret";
 process.env.APPROVER_EMAILS = "admin@nirvanearth.com";
 process.env.NOTIFY_EMAIL = "admin@nirvanearth.com";
 process.env.EMAIL_FROM = "settlement@localhost";
+process.env.RESEND_API_KEY = "";
 process.env.STRIPE_SECRET_KEY = "";
 process.env.ENABLE_PAYOUT_TRIGGER = "false";
 process.env.APP_URL = "http://localhost:3000";

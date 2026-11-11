@@ -9,6 +9,7 @@ import {
   exampleNonVatVendor,
   exampleVatVendor,
   exampleVatVendorDeliveryPaid,
+  expectedOwnProductDeliveryAed,
   isPlatformOwn,
   isPlatformOwnProduct,
   isQualified,
@@ -92,7 +93,40 @@ describe("locked client entitlement", () => {
     assert.equal(result.deliveryAllowance, 10);
     assert.equal(result.commissionBase, 100);
     assert.equal(result.commissionAmount, 20);
-    assert.equal(result.vendorNet, 85);
+    assert.equal(result.deliveryAllocation, "vendor");
+    assert.equal(result.vendorNet, 95);
+  });
+
+  it("#9004 style: allowance 10 to the vendor, VAT 5, net 95", () => {
+    const result = calculateCommission({
+      gross: 115,
+      discount: 0,
+      vendorVat: 5,
+      taxesIncluded: true,
+      vatRegistered: true,
+      deliveryAllowance: 10,
+      deliveryAllocation: "platform",
+    });
+    assert.equal(result.productNetExVat, 110);
+    assert.equal(result.commissionBase, 100);
+    assert.equal(result.commissionAmount, 20);
+    assert.equal(result.vendorVat, 5);
+    assert.equal(result.deliveryAllocation, "vendor");
+    assert.equal(result.vendorNet, 95);
+  });
+
+  it("own product net stays 0 beside a third-party allowance line", () => {
+    const own = calculateCommission({ gross: 150, discount: 0, isPlatformOwn: true, deliveryAllowance: 10 });
+    const vendor = calculateCommission({
+      gross: 115,
+      discount: 0,
+      vendorVat: 5,
+      taxesIncluded: true,
+      deliveryAllowance: 10,
+    });
+    assert.equal(own.vendorNet, 0);
+    assert.equal(own.commissionAmount, 0);
+    assert.equal(vendor.vendorNet, 95);
   });
 });
 
@@ -390,7 +424,7 @@ describe("spec sellers", () => {
   });
 });
 
-describe("28 Oct 2026 worked examples", () => {
+describe("11 Nov 2026 worked examples", () => {
   it("VAT vendor: commission on ex-VAT product after the included delivery allowance", () => {
     const result = exampleVatVendor.result;
     assert.equal(result.productSellingAfterDiscount, 126);
@@ -399,23 +433,24 @@ describe("28 Oct 2026 worked examples", () => {
     assert.equal(result.commissionBase, 100);
     assert.equal(result.commissionAmount, 20);
     assert.equal(result.vendorVat, 6);
-    assert.equal(result.deliveryAllocation, "unassigned");
-    assert.equal(result.vendorNet, 86);
+    assert.equal(result.deliveryAllocation, "vendor");
+    assert.equal(result.vendorNet, 106);
   });
 
-  it("pays the included delivery allowance only when it belongs to the vendor", () => {
+  it("pays the included delivery allowance to the vendor", () => {
     assert.equal(exampleVatVendorDeliveryPaid.result.commissionBase, 100);
     assert.equal(exampleVatVendorDeliveryPaid.result.commissionAmount, 20);
     assert.equal(exampleVatVendorDeliveryPaid.result.vendorNet, 106);
   });
 
-  it("non-VAT vendor: no VAT line, delivery allowance out of the base", () => {
+  it("non-VAT vendor: no VAT line, delivery allowance out of the base and paid to the vendor", () => {
     const result = exampleNonVatVendor.result;
     assert.equal(result.vendorVat, 0);
     assert.equal(result.productSellingAfterDiscount, 150);
     assert.equal(result.commissionBase, 120);
     assert.equal(result.commissionAmount, 24);
-    assert.equal(result.vendorNet, 96);
+    assert.equal(result.deliveryAllocation, "vendor");
+    assert.equal(result.vendorNet, 126);
   });
 
   it("excludes a platform gift hamper from vendor settlement", () => {
@@ -431,7 +466,7 @@ describe("28 Oct 2026 worked examples", () => {
     assert.equal(order.customerProductTotal, 456);
     assert.equal(order.separateShipping, 15);
     assert.equal(order.commissionTotal, 44);
-    assert.equal(order.vendorEntitlementTotal, 182);
+    assert.equal(order.vendorEntitlementTotal, 232);
     assert.equal(order.lines[2]!.result.skipped, true);
   });
 
@@ -450,6 +485,24 @@ describe("28 Oct 2026 worked examples", () => {
       allocation: "unassigned",
       source: "default",
     });
+    assert.deepEqual(
+      parseDeliveryAllowance({
+        properties: [
+          { name: "included_delivery_allowance", value: "10" },
+          { name: "delivery_allocation", value: "unassigned" },
+        ],
+      }),
+      { amount: 10, allocation: "vendor", source: "property" },
+    );
+  });
+});
+
+describe("own-product checkout delivery", () => {
+  it("charges AED 19 once under AED 199 and nothing at the threshold", () => {
+    assert.equal(expectedOwnProductDeliveryAed(0), 0);
+    assert.equal(expectedOwnProductDeliveryAed(198.99), 19);
+    assert.equal(expectedOwnProductDeliveryAed(199), 0);
+    assert.equal(expectedOwnProductDeliveryAed(400), 0);
   });
 });
 

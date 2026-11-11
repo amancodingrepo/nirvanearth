@@ -28,7 +28,14 @@ export function presentLine(line: {
   status: string;
   blockReason: string | null;
   vendor?: { id: string; name: string; vatRegistered: boolean; stripeAccountId: string | null } | null;
-  order?: { orderNumber: string; shippingTotal: Decimalish; shippingAllocation: string; gateway: string | null };
+  order?: {
+    orderNumber: string;
+    shippingTotal: Decimalish;
+    shippingAllocation: string;
+    gateway: string | null;
+    ownProductSubtotal?: Decimalish;
+    expectedOwnDelivery?: Decimalish;
+  };
 }) {
   return {
     id: line.id,
@@ -49,6 +56,8 @@ export function presentLine(line: {
     deliveryAllowance: money(line.deliveryAllowance ?? 0),
     deliveryAllocation: line.deliveryAllocation ?? "unassigned",
     orderShippingTotal: line.order ? money(line.order.shippingTotal) : 0,
+    ownProductSubtotal: line.order ? money(line.order.ownProductSubtotal ?? 0) : 0,
+    expectedOwnDelivery: line.order ? money(line.order.expectedOwnDelivery ?? 0) : 0,
     shippingAllocation: line.order?.shippingAllocation ?? line.shippingAllocation,
     commissionBase: money(line.commissionBase),
     commissionAmount: money(line.commissionAmount),

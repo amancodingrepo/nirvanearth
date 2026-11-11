@@ -1,6 +1,6 @@
 # Field mapping (test mode)
 
-Rules version `2026-10-28`. Shopify Admin order payload and Webkul values written onto the line. There is no separate Webkul API client in this app.
+Rules version `2026-11-11`. Shopify Admin order payload and Webkul values written onto the line. There is no separate Webkul API client in this app.
 
 | Shopify / Webkul field | Settlement meaning | Rule use |
 |------------------------|--------------------|----------|
@@ -14,8 +14,8 @@ Rules version `2026-10-28`. Shopify Admin order payload and Webkul values writte
 | `order.taxes_included` | Whether VAT sits inside `price` | `true`: subtract vendor VAT before the 20%. `false`: show VAT and do not subtract it again. Then add vendor VAT onto vendor entitlement. |
 | `vendors.vat_registered` | VAT-registered supplier | `false`: no vendor VAT line, even if Shopify sent a tax amount. New unknown sellers are created as non-VAT. |
 | Line property `delivery_allowance` (also `included_delivery`, `included_delivery_allowance`, `nirvan_delivery_allowance`) | Agreed delivery allowance included in the listed price | Subtracted from the commission base. Missing or non-numeric: **0** in test mode. |
-| Line property `delivery_allocation` (`vendor`, `platform`, `unassigned`) | Who keeps that allowance | Only `vendor` is added to vendor entitlement. Missing or unknown: **`unassigned`**. |
-| `order.shipping_lines[].price` | Separate checkout shipping | Stored on the order as `shipping_total`. Not commissioned. Allocation stays `unassigned` and is not added to vendor net. |
+| Line property `delivery_allocation` (`vendor`, `platform`, `unassigned`) | Older commercial flag | A positive allowance is stored as **`vendor`** and added to vendor entitlement. `platform` and `unassigned` on a positive amount are overridden by the 11 Nov 2026 lock. Amount 0 stays `unassigned`. |
+| `order.shipping_lines[].price` | Separate checkout shipping | Stored on the order as `shipping_total` with allocation `platform`. Not commissioned and not added to vendor net. |
 | `line_items.product_tags`, product id, vendor name | Own catalogue / gift hamper | Tags `nirvan-own`, `gift-hamper`, vendor `Nirvan Earth`, `PLATFORM_OWN_PRODUCT_IDS`. Excluded from third-party settlement. |
 | `order.financial_status` | Paid, partial, refunded, voided | Qualifies only for `paid`, `partially_paid`, `partially_refunded`. `refunded` blocks as `refunded`. `pending` and other unpaid statuses block as `unpaid`. `voided` blocks as `cancelled`. Ingest still accepts `refunded` so the line can be stored and blocked. |
 | `order.cancelled_at` | Order cancelled | Blocks the line as `cancelled`. |
@@ -29,8 +29,8 @@ Rules version `2026-10-28`. Shopify Admin order payload and Webkul values writte
 
 | Gap | What the API does not give | Test-mode default |
 |-----|----------------------------|-------------------|
-| Included delivery allowance | Shopify has no standard field for a delivery amount baked into the product price. | 0 and `unassigned` until a line property is set. Separate `shipping_lines` are not treated as this allowance. Test order #9004 sets `included_delivery_allowance` = 10 and `delivery_allocation` = `unassigned` on a VAT line priced at 115. Commission base is 100. The allowance is not added to vendor net. |
-| Who keeps the allowance | No commercial flag in Shopify or Webkul. | `unassigned`. The amount is not commissioned and is not paid to the vendor. |
+| Included delivery allowance | Shopify has no standard field for a delivery amount baked into the product price. | 0 until a line property is set. Separate `shipping_lines` are not treated as this allowance. Test order #9004 sets `included_delivery_allowance` = 10 on a VAT line priced at 115. Commission base is 100. The AED 10 is allocated to the vendor. Vendor net is 95. |
+| Who keeps the allowance | The 11 Nov 2026 lock assigns a positive embedded allowance to the vendor. | Stored as `vendor`. It is excluded from the commission base and included in vendor net. |
 | Webkul seller API | This app does not call Webkul. Seller id is whatever Webkul writes onto the Shopify line. | Match property, then `sellerKey::sku`, then vendor name. A new signal creates a vendor: VAT off, payout `stripe_connect`, no Stripe account, active. Platform-own lines are not given a vendor. |
 | VAT registration | Shopify tax lines do not say the vendor is VAT-registered. | `vendors.vat_registered`. Unknown new vendors are non-VAT, so their tax is not a vendor VAT line. |
 | Per-unit allowance | A property named like a unit rate would be wrong. | The property is the line total in AED. |

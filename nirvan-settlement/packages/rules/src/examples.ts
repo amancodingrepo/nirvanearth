@@ -1,10 +1,9 @@
 import { calculateCommission, type CommissionInput, type CommissionResult } from "./commission.ts";
 
 /**
- * Worked AED examples for rules version 2026-10-28.
- * Delivery allowance is inside the listed product price.
- * A separate Shopify shipping line is not inside that price.
- * Default delivery allocation is unassigned, so the allowance is not paid to the vendor.
+ * Worked AED examples for rules version 2026-11-11.
+ * Delivery allowance is inside the listed product price and is paid to the vendor.
+ * A separate Shopify shipping line is not inside that price and is not a vendor entitlement.
  */
 
 export interface WorkedLine {
@@ -19,14 +18,14 @@ function line(label: string, vendor: string, input: CommissionInput): WorkedLine
 }
 
 /** Listed 136 incl. VAT 6 and delivery 20. Discount 10. Discounted line = 126. */
-export const exampleVatVendor = line("VAT vendor, delivery unassigned", "Desert Botanics", {
+export const exampleVatVendor = line("VAT vendor, delivery allowance to vendor", "Desert Botanics", {
   gross: 136,
   discount: 10,
   vendorVat: 6,
   taxesIncluded: true,
   vatRegistered: true,
   deliveryAllowance: 20,
-  deliveryAllocation: "unassigned",
+  deliveryAllocation: "vendor",
 });
 
 export const exampleVatVendorDeliveryPaid = line("VAT vendor, delivery belongs to vendor", "Desert Botanics", {
@@ -42,7 +41,7 @@ export const exampleNonVatVendor = line("Non-VAT vendor", "Gulf Honey Co", {
   taxesIncluded: false,
   vatRegistered: false,
   deliveryAllowance: 30,
-  deliveryAllocation: "unassigned",
+  deliveryAllocation: "vendor",
 });
 
 export const exampleGiftHamper = line("Platform gift hamper", "Nirvan Earth", {

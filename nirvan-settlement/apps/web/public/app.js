@@ -500,7 +500,7 @@ async function renderPack(me) {
   const canApprove = pack.status === "pending_approval" && me.approver;
   const canExecute = (pack.status === "approved" || pack.status === "executing") && me.approver;
   const fee = pack.lines.find((line) => line.feeNotes)?.feeNotes
-    || "Stripe, payment, and Connect fees are borne by Nirvan Earth and are not deducted from vendor net.";
+    || "Nirvan Earth bears customer checkout gateway fees inside its commission. Connect transfer fees and bank payout fees are recorded separately and are not deducted from vendor net.";
   app.innerHTML = shell(me, dash, health, `
     <div class="page-head">
       <div>
@@ -611,8 +611,9 @@ function orderPairs(lines) {
             <div><span>Gross</span><strong>${aed(line.gross)}</strong></div>
             <div><span>Discount</span><strong>${aed(line.discount)}</strong></div>
             <div><span>Vendor VAT</span><strong>${line.vatRegistered ? aed(line.vendorVat) : "No VAT"}</strong></div>
-            <div><span>Delivery allowance</span><strong>${aed(line.deliveryAllowance || 0)}</strong><span>${esc(line.deliveryAllocation || "unassigned")}</span></div>
-            <div><span>Order shipping</span><strong>${aed(line.orderShippingTotal)}</strong><span>${esc(line.shippingAllocation || "")}</span></div>
+            <div><span>Delivery allowance</span><strong>${aed(line.deliveryAllowance || 0)}</strong><span>${Number(line.deliveryAllowance) > 0 ? "Paid to vendor" : esc(line.deliveryAllocation || "none")}</span></div>
+            <div><span>Checkout shipping</span><strong>${aed(line.orderShippingTotal)}</strong><span>Platform, not a vendor entitlement</span></div>
+            <div><span>Own-product delivery</span><strong>${aed(line.expectedOwnDelivery || 0)}</strong><span>AED 19 under 199, else free. Own subtotal ${aed(line.ownProductSubtotal || 0)}</span></div>
             <div><span>Commission base</span><strong>${aed(line.commissionBase)}</strong></div>
             <div><span>Commission</span><strong>${aed(line.commissionAmount)}</strong></div>
             <div><span>Delivered</span><strong>${when(line.fulfilledAt)}</strong></div>
@@ -1063,7 +1064,7 @@ async function renderRules(me) {
     </div>
     <section class="card">
       <div class="card-body">
-        <p>Delivery allowance is ${payload.excludeDeliveryAllowanceFromCommissionBase === false ? "included in" : "left out of"} the commission base.</p>
+        <p>Embedded delivery allowance is ${payload.excludeDeliveryAllowanceFromCommissionBase === false ? "inside" : "left out of"} the commission base and is paid to the vendor. Checkout shipping on Nirvan Earth products is separate: AED 19 when the own-product subtotal is under AED 199, free at AED 199 or more, once per order. Third-party lines add no extra delivery charge.</p>
         <p class="muted">Own-product tags: ${esc((payload.platformOwnTags || []).join(", ") || "—")}</p>
         <p class="muted">Own-product names: ${esc((payload.platformOwnVendorNames || []).join(", ") || "—")}</p>
       </div>
@@ -1072,7 +1073,7 @@ async function renderRules(me) {
       <summary>Propose a new version</summary>
       <form id="rule-form" class="propose">
         <div class="filters">
-          <input name="versionLabel" value="${esc(payload.rulesVersion || "2026-10-28")}" aria-label="Version label" />
+          <input name="versionLabel" value="${esc(payload.rulesVersion || "2026-11-11")}" aria-label="Version label" />
           <input name="commissionRate" value="${esc(payload.commissionRate ?? 0.2)}" aria-label="Commission rate" />
           <input name="returnWindowDays" value="${esc(payload.returnWindowDays ?? 14)}" aria-label="Return window days" />
         </div>

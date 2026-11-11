@@ -3,7 +3,7 @@ import { after, before, beforeEach, describe, it } from "node:test";
 import { createMailer } from "../src/mailer.ts";
 import { loadConfig, type AppConfig } from "../src/config.ts";
 import { disconnectDb, getDb, resetDatabase } from "../src/db.ts";
-import { executePack } from "../src/execute.ts";
+import { executePack, markManualPaid } from "../src/execute.ts";
 import { ingestShopifyOrder, requalifyLines } from "../src/ingest.ts";
 import { money } from "../src/money-db.ts";
 import { approvePack, generateMonthPack, submitPack } from "../src/pack.ts";
@@ -19,6 +19,7 @@ process.env.SESSION_SECRET = "test-secret";
 process.env.APPROVER_EMAILS = "admin@nirvanearth.com";
 process.env.NOTIFY_EMAIL = "admin@nirvanearth.com";
 process.env.EMAIL_FROM = "settlement@localhost";
+process.env.RESEND_API_KEY = "";
 process.env.STRIPE_SECRET_KEY = "";
 process.env.SHOPIFY_ADMIN_TOKEN = "";
 process.env.RETURN_WINDOW_DAYS = "14";
@@ -71,7 +72,8 @@ describe("settlement matrix", () => {
     }));
     const snapshot = await db.orderSnapshot.findFirstOrThrow();
     assert.equal(money(snapshot.shippingTotal), 15);
-    assert.equal(snapshot.shippingAllocation, "unassigned");
+    assert.equal(snapshot.shippingAllocation, "platform");
+    assert.equal(money(snapshot.expectedOwnDelivery), 0);
     const pack = await generateMonthPack(db, config, "2026-09", ACTOR, NOW);
     const payable = pack.lines.filter((line) => line.kind === "payable");
     assert.equal(payable.length, 1);
@@ -187,23 +189,140 @@ describe("settlement matrix", () => {
     assert.equal(money(oil.commissionAmount), 20);
     assert.equal(money(oil.vendorVat), 6);
     assert.equal(money(oil.deliveryAllowance), 20);
-    assert.equal(money(oil.vendorNet), 86);
+    assert.equal(oil.deliveryAllocation, "vendor");
+    assert.equal(money(oil.vendorNet), 106);
     assert.equal(money(honey.vendorVat), 0);
     assert.equal(money(honey.commissionBase), 120);
     assert.equal(money(honey.commissionAmount), 24);
-    assert.equal(money(honey.vendorNet), 96);
+    assert.equal(honey.deliveryAllocation, "vendor");
+    assert.equal(money(honey.vendorNet), 126);
     assert.equal(hamper.isPlatformOwn, true);
     assert.equal(money(hamper.vendorNet), 0);
 
     const snapshot = await db.orderSnapshot.findFirstOrThrow();
     assert.equal(money(snapshot.shippingTotal), 15);
-    assert.equal(snapshot.shippingAllocation, "unassigned");
+    assert.equal(snapshot.shippingAllocation, "platform");
+    assert.equal(money(snapshot.ownProductSubtotal), 180);
+    assert.equal(money(snapshot.expectedOwnDelivery), 19);
 
     const pack = await generateMonthPack(db, config, "2026-09", ACTOR, NOW);
     const payable = pack.lines.filter((line) => line.kind === "payable");
     assert.equal(payable.length, 2);
     const nets = payable.map((line) => money(line.vendorNetSum)).sort((a, b) => a - b);
-    assert.deepEqual(nets, [86, 96]);
+    assert.deepEqual(nets, [106, 126]);
+  });
+
+  it("#9004 allowance is paid to the vendor and checkout shipping stays off the net", async () => {
+    await vendor("Desert Botanics", { vatRegistered: true, stripeAccountId: "acct_desert" });
+    await ingest(order({
+      id: 9004,
+      paidAt: "2026-09-08T08:00:00.000Z",
+      fulfilledAt: "2026-09-08T12:00:00.000Z",
+      taxesIncluded: true,
+      shipping: 12,
+      lines: [{ id: 5, title: "Desert rose oil, delivery included", price: 115, vat: 5, vendor: "Desert Botanics" }],
+      lineExtras: { 5: { allowance: 10, allocation: "unassigned" } },
+    }));
+    const line = await db.orderLine.findFirstOrThrow();
+    assert.equal(money(line.commissionBase), 100);
+    assert.equal(money(line.commissionAmount), 20);
+    assert.equal(money(line.vendorVat), 5);
+    assert.equal(money(line.deliveryAllowance), 10);
+    assert.equal(line.deliveryAllocation, "vendor");
+    assert.equal(money(line.vendorNet), 95);
+    assert.equal(money(line.shippingAmount), 0);
+    const snapshot = await db.orderSnapshot.findFirstOrThrow();
+    assert.equal(snapshot.shippingAllocation, "platform");
+    assert.equal(money(snapshot.shippingTotal), 12);
+    assert.equal(money(snapshot.expectedOwnDelivery), 0);
+    const review = await db.auditEvent.findFirst({ where: { action: "order.shipping.review" } });
+    assert.ok(review);
+  });
+
+  it("mixed cart uses only the own-product subtotal for the AED 19 rule", async () => {
+    await vendor("Desert Botanics");
+    await ingest(order({
+      id: 199,
+      paidAt: "2026-09-02T08:00:00.000Z",
+      fulfilledAt: "2026-09-02T12:00:00.000Z",
+      shipping: 19,
+      lines: [
+        { id: 1991, title: "Own candle", price: 150, vendor: "Nirvan Earth", tags: ["nirvan-own"] },
+        { id: 1992, title: "Oil", price: 500, vendor: "Desert Botanics" },
+      ],
+    }));
+    const snapshot = await db.orderSnapshot.findFirstOrThrow();
+    assert.equal(money(snapshot.ownProductSubtotal), 150);
+    assert.equal(money(snapshot.expectedOwnDelivery), 19);
+    assert.equal(snapshot.shippingAllocation, "platform");
+    const oil = await db.orderLine.findFirstOrThrow({ where: { shopifyLineId: "1992" } });
+    const own = await db.orderLine.findFirstOrThrow({ where: { shopifyLineId: "1991" } });
+    assert.equal(money(oil.vendorNet), 400);
+    assert.equal(money(oil.shippingAmount), 0);
+    assert.equal(money(own.vendorNet), 0);
+    assert.equal(own.isPlatformOwn, true);
+
+    await db.orderLine.deleteMany();
+    await db.orderSnapshot.deleteMany();
+    await db.auditEvent.deleteMany();
+    await ingest(order({
+      id: 200,
+      paidAt: "2026-09-02T08:00:00.000Z",
+      fulfilledAt: "2026-09-02T12:00:00.000Z",
+      lines: [{ id: 2001, title: "Own set", price: 199, vendor: "Nirvan Earth", tags: ["nirvan-own"] }],
+    }));
+    const free = await db.orderSnapshot.findFirstOrThrow();
+    assert.equal(money(free.ownProductSubtotal), 199);
+    assert.equal(money(free.expectedOwnDelivery), 0);
+  });
+
+  it("manual bank execute waits, then mark paid stores advice and message ids", async () => {
+    await vendor("Gulf Honey Co", {
+      email: "gulf.honey@example.com",
+      payoutMethod: "manual_bank",
+    });
+    await ingest(order({
+      id: 77,
+      paidAt: "2026-09-02T08:00:00.000Z",
+      fulfilledAt: "2026-09-02T12:00:00.000Z",
+      lines: [{ id: 771, title: "Honey", price: 80, vendor: "Gulf Honey Co" }],
+    }));
+    const gateway = new SimulatedGateway();
+    const pack = await generateMonthPack(db, config, "2026-09", ACTOR, NOW);
+    const mailer = {
+      async send(message: { to: string }) {
+        if (message.to === "admin@nirvanearth.com") return { id: "re_manual_admin_1" };
+        return { id: "c0ffee00-1111-4222-8333-444455556666" };
+      },
+    };
+    await submitPack(db, config, mailer, pack.id, ACTOR);
+    await approvePack(db, config, mailer, pack.id, ACTOR, undefined, NOW);
+    const results = await executePack(db, config, mailer, gateway, pack.id, ACTOR);
+    assert.equal(results[0]?.status, "awaiting_manual_payment");
+    assert.equal(gateway.calls.length, 0);
+    const waiting = await db.settlementLine.findFirstOrThrow({ where: { kind: "payable" } });
+    assert.equal(waiting.stripeTransferId, null);
+    await markManualPaid(db, config, mailer, waiting.id, ACTOR, "NE-BANK-77");
+    const paid = await db.settlementLine.findFirstOrThrow({ where: { id: waiting.id } });
+    assert.equal(paid.status, "manual_paid");
+    assert.equal(paid.manualReference, "NE-BANK-77");
+    assert.equal(paid.stripeTransferId, null);
+    const invoice = await db.settlementInvoice.findUniqueOrThrow({ where: { settlementLineId: paid.id } });
+    assert.match(invoice.number, /^NE-SA-2026-09-/);
+    const adminMail = await db.emailMessage.findFirstOrThrow({
+      where: { toEmail: "admin@nirvanearth.com", subject: { startsWith: "Payment advice" } },
+    });
+    const vendorMail = await db.emailMessage.findFirstOrThrow({
+      where: { toEmail: "gulf.honey@example.com", subject: { startsWith: "Payment advice" } },
+    });
+    assert.equal(adminMail.providerMessageId, "re_manual_admin_1");
+    assert.equal(vendorMail.providerMessageId, "c0ffee00-1111-4222-8333-444455556666");
+    const vendorAudit = await db.auditEvent.findFirstOrThrow({ where: { action: "invoice.vendor_copy" } });
+    const payload = vendorAudit.payloadJson as { providerMessageId?: string };
+    assert.equal(payload.providerMessageId, "c0ffee00-1111-4222-8333-444455556666");
+    await markManualPaid(db, config, mailer, waiting.id, ACTOR, "NE-BANK-77");
+    assert.equal(await db.settlementInvoice.count(), 1);
+    assert.equal(gateway.calls.length, 0);
   });
 
   it("cancelled order does not qualify", async () => {
@@ -458,13 +577,21 @@ describe("settlement matrix", () => {
 
 async function vendor(
   name: string,
-  extra: { vatRegistered?: boolean; stripeAccountId?: string; externalKey?: string } = {},
+  extra: {
+    vatRegistered?: boolean;
+    stripeAccountId?: string;
+    externalKey?: string;
+    email?: string;
+    payoutMethod?: string;
+  } = {},
 ) {
   return db.vendor.create({
     data: {
       name,
+      email: extra.email ?? null,
       vatRegistered: extra.vatRegistered ?? false,
       stripeAccountId: extra.stripeAccountId ?? null,
+      payoutMethod: extra.payoutMethod ?? "stripe_connect",
       webkulSellerId: extra.externalKey ?? name.toLowerCase().replace(/\s+/g, "-"),
       externalKey: extra.externalKey ?? name.toLowerCase().replace(/\s+/g, "-"),
       active: true,

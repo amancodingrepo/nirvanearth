@@ -8,7 +8,7 @@ import { notify, type Mailer } from "./mailer.ts";
 import { dec, money } from "./money-db.ts";
 
 const FEE_NOTES =
-  "Stripe, payment, and Connect fees are borne by Nirvan Earth and are not deducted from vendor net.";
+  "Nirvan Earth bears customer checkout gateway fees inside its commission. Connect transfer fees and bank payout fees are also borne by Nirvan Earth and recorded separately. None of these fees are deducted from vendor net.";
 
 export async function generateMonthPack(
   db: PrismaClient,

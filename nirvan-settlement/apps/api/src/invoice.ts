@@ -5,10 +5,11 @@ import { formatAed } from "@nirvan/rules";
 import { recordAudit } from "./audit.ts";
 import type { AppConfig } from "./config.ts";
 import { HttpError } from "./config.ts";
-import { notify, type Mailer } from "./mailer.ts";
+import { notify, notifyAddress, type Mailer } from "./mailer.ts";
 import { money } from "./money-db.ts";
 
-const FEE_NOTE = "Stripe, payment, and Connect fees are borne by Nirvan Earth and are not deducted from this net.";
+const FEE_NOTE =
+  "Nirvan Earth bears customer checkout gateway fees inside its commission. Connect transfer fees and bank payout fees are also borne by Nirvan Earth and recorded separately. None of these fees are deducted from this vendor net.";
 
 export async function ensureSettlementInvoice(
   db: PrismaClient,
@@ -65,19 +66,14 @@ export async function ensureSettlementInvoice(
     subject: `Payment advice ${number}`,
     text,
   });
-  if (line.vendor.email && line.vendor.email.toLowerCase() !== "admin@nirvanearth.com") {
-    await db.emailMessage.create({
-      data: {
-        toEmail: line.vendor.email,
-        subject: `Payment advice ${number}`,
-        body: text,
-        delivery: "blocked",
-        providerMessageId: null,
-      },
-    });
-    await recordAudit(db, "email.blocked", input.actorEmail, {
+  const vendorEmail = (line.vendor.email ?? "").trim().toLowerCase();
+  if (vendorEmail && vendorEmail !== "admin@nirvanearth.com") {
+    await notifyAddress(db, config, mailer, {
+      to: vendorEmail,
       subject: `Payment advice ${number}`,
-      reason: "vendor_copy_not_sent",
+      text,
+      action: "invoice.vendor_copy",
+      actorEmail: input.actorEmail,
     });
   }
   return { invoice, created: true };
@@ -98,6 +94,7 @@ export async function invoicePdfForLine(db: PrismaClient, lineId: string): Promi
   const discount = orderLines.reduce((sum, line) => sum + money(line.discount), 0);
   const vat = orderLines.reduce((sum, line) => sum + money(line.vendorVat), 0);
   const commission = orderLines.reduce((sum, line) => sum + money(line.commissionAmount), 0);
+  const allowance = orderLines.reduce((sum, line) => sum + money(line.deliveryAllowance), 0);
   const adjustments = await db.adjustment.aggregate({
     where: { orderLineId: { in: orderLines.map((line) => line.id) }, status: "resolved" },
     _sum: { amount: true },
@@ -113,6 +110,7 @@ export async function invoicePdfForLine(db: PrismaClient, lineId: string): Promi
     base,
     discount,
     commission,
+    allowance,
     rate,
     rulesVersion: payload?.rulesVersion || "2026-10-28",
     vat,
@@ -172,6 +170,7 @@ function renderAdvicePdf(input: {
   base: number;
   discount: number;
   commission: number;
+  allowance: number;
   rate: number;
   rulesVersion: string;
   vat: number;
@@ -223,6 +222,7 @@ function renderAdvicePdf(input: {
     ["Sales base", aed(input.base)],
     ["Discounts already removed from the base", aed(input.discount)],
     [`Commission ${(input.rate * 100).toFixed(0)}%`, aed(input.commission)],
+    ["Delivery allowance to vendor", aed(input.allowance)],
     ["Vendor VAT added back", input.vatRegistered ? aed(input.vat) : "None"],
     ["Adjustments", aed(input.adjustments)],
   ];
