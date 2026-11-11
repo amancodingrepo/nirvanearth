@@ -37,3 +37,18 @@ coverage/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Local operator artifacts. Session cookies, screenshots, client PDFs, and one-off capture scripts stay on this machine.
+cookies.txt
+image.png
+/docs/
+nirvan-settlement/scripts/apply-local-vendors.mjs
+nirvan-settlement/scripts/build-deployed-pdf.mjs
+nirvan-settlement/scripts/capture-addendum-28-oct.mjs
+nirvan-settlement/scripts/capture-deployed-report.mjs
+nirvan-settlement/scripts/capture-screenshots.js
+nirvan-settlement/scripts/generate-pdf.js
+nirvan-settlement/scripts/railway-status-shots.mjs
+nirvan-settlement/scripts/rebuild-addendum-pdf.mjs
+nirvan-settlement/scripts/recapture-wide-tables.mjs
+nirvan-settlement/scripts/retry-deployed-pack.mjs
