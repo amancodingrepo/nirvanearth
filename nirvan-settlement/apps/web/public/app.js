@@ -1232,6 +1232,7 @@ function payRows(lines, payoutsEnabled) {
   const totBase = lines.reduce((s, l) => s + l.commissionBaseSum, 0);
   const totComm = lines.reduce((s, l) => s + l.commissionSum, 0);
   const totDeliv = lines.reduce((s, l) => s + l.shippingSum, 0);
+  const totVat = lines.reduce((s, l) => s + (l.vendorVatSum || 0), 0);
   const totNet = lines.reduce((s, l) => s + (l.ruleNetSum ?? l.vendorNetSum), 0);
   return `
     <div class="table-wrap">
@@ -1244,6 +1245,7 @@ function payRows(lines, payoutsEnabled) {
             <th class="num">Base Sales</th>
             <th class="num">20% Fee (-)</th>
             <th class="num">Delivery (+)</th>
+            <th class="num">Vendor VAT (+)</th>
             <th class="num">Vendor Payout (=)</th>
             <th>Status</th>
             <th></th>
@@ -1265,6 +1267,7 @@ function payRows(lines, payoutsEnabled) {
               <td class="num">${aed(line.commissionBaseSum)}</td>
               <td class="num" style="color:var(--critical)">- ${aed(line.commissionSum)}</td>
               <td class="num" style="color:var(--info)">+ ${aed(line.shippingSum)}</td>
+              <td class="num" style="color:var(--info)">+ ${aed(line.vendorVatSum || 0)}</td>
               <td class="num" style="font-weight:700;color:var(--success);font-size:14px;">= ${aed(line.ruleNetSum ?? line.vendorNetSum)}${line.ruleNetSum != null && Math.abs(line.ruleNetSum - line.vendorNetSum) > 0.001 ? `<div class="muted" style="font-weight:normal;font-size:11px;">Already paid ${aed(line.vendorNetSum)}</div>` : ""}</td>
               <td>${badge(line.status)}</td>
               <td class="wrap">
@@ -1285,6 +1288,7 @@ function payRows(lines, payoutsEnabled) {
             <td class="num"><strong>${aed(totBase)}</strong></td>
             <td class="num" style="color:var(--critical)"><strong>- ${aed(totComm)}</strong></td>
             <td class="num" style="color:var(--info)"><strong>+ ${aed(totDeliv)}</strong></td>
+            <td class="num" style="color:var(--info)"><strong>+ ${aed(totVat)}</strong></td>
             <td class="num" style="color:var(--success);font-size:14px;"><strong>= ${aed(totNet)}</strong></td>
             <td colspan="2"></td>
           </tr>
@@ -1329,10 +1333,29 @@ async function renderPack(me) {
         Pay on or after ${esc(payout.label)}. You can approve before that day. In practice mode, Pay does not wait and does not move real money.
       </div>
     </div>
+
+    <!-- Math Callout Banner on renderPack -->
+    <div class="calc-callout">
+      <div>
+        <strong>💡 Formula: How Vendor Payouts Add Up</strong>
+        <div class="calc-formula">
+          <span class="pill-math base">Base Sales</span>
+          <span>−</span>
+          <span class="pill-math minus">20% Nirvan Fee</span>
+          <span>+</span>
+          <span class="pill-math plus">Delivery in Price</span>
+          <span>+</span>
+          <span class="pill-math plus">Vendor VAT</span>
+          <span>=</span>
+          <span class="pill-math equals">Vendor Net Payout</span>
+        </div>
+      </div>
+    </div>
+
     <div class="metrics">
       <div class="metric"><div class="label">To pay vendors</div><div class="value">${aed(pack.rulePayableTotal ?? pack.payableTotal)}</div>${Math.abs((pack.rulePayableTotal ?? pack.payableTotal) - pack.payableTotal) > 0.001 ? `<div class="muted">Already paid ${aed(pack.payableTotal)}</div>` : ""}</div>
-      <div class="metric"><div class="label">Pay by Stripe</div><div class="value">${aed(pack.connectPayableTotal || 0)}</div></div>
-      <div class="metric"><div class="label">Pay by bank</div><div class="value">${aed(pack.manualPayableTotal || 0)}</div></div>
+      <div class="metric"><div class="label">Nirvan 20% Fee</div><div class="value">${aed(pack.commissionTotal || 0)}</div></div>
+      <div class="metric"><div class="label">Vendor VAT Included</div><div class="value">${aed(pack.vatTotal || 0)}</div></div>
       <div class="metric"><div class="label">Waiting</div><div class="value">${aed(pack.heldTotal)}</div></div>
     </div>
     <div class="banner info"><div><strong>Card fees stay with Nirvan Earth</strong>They are not taken off the vendor amount. Nirvan Earth's commission on what you can pay is ${aed(pack.commissionTotal || 0)}.</div></div>

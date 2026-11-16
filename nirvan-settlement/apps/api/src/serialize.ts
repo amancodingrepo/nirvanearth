@@ -94,7 +94,7 @@ export function presentPack(pack: {
     vendor: { name: string; email: string | null; vatRegistered: boolean; stripeAccountId: string | null; payoutMethod?: string };
     invoice?: { id: string; number: string } | null;
     payouts?: Array<{ status: string }>;
-    orderLines?: Array<{ vendorNet: Decimalish }>;
+    orderLines?: Array<{ vendorNet: Decimalish; vendorVat?: Decimalish }>;
   }>;
 }) {
   const payable = pack.lines.filter((line) => line.kind === "payable");
@@ -106,6 +106,22 @@ export function presentPack(pack: {
     line.orderLines && line.orderLines.length > 0
       ? line.orderLines.reduce((sum, item) => sum + money(item.vendorNet), 0)
       : money(line.vendorNetSum);
+  const lineVat = (line: {
+    vendorNetSum: Decimalish;
+    commissionBaseSum: Decimalish;
+    commissionSum: Decimalish;
+    shippingSum: Decimalish;
+    vendor: { vatRegistered: boolean };
+    orderLines?: Array<{ vendorVat?: Decimalish }>;
+  }) => {
+    if (!line.vendor.vatRegistered) return 0;
+    if (line.orderLines && line.orderLines.length > 0) {
+      const sum = line.orderLines.reduce((s, o) => s + (o.vendorVat != null ? money(o.vendorVat) : 0), 0);
+      return Math.round(sum * 100) / 100;
+    }
+    const implied = money(line.vendorNetSum) - (money(line.commissionBaseSum) - money(line.commissionSum) + money(line.shippingSum));
+    return implied > 0 ? Math.round(implied * 100) / 100 : 0;
+  };
   return {
     id: pack.id,
     yearMonth: pack.yearMonth,
@@ -117,6 +133,7 @@ export function presentPack(pack: {
     manualPayableTotal: manualPayable.reduce((sum, line) => sum + money(line.vendorNetSum), 0),
     rulePayableTotal: payable.reduce((sum, line) => sum + ruleNet(line), 0),
     commissionTotal: payable.reduce((sum, line) => sum + money(line.commissionSum), 0),
+    vatTotal: payable.reduce((sum, line) => sum + lineVat(line), 0),
     heldTotal: held.reduce((sum, line) => sum + money(line.vendorNetSum), 0),
     lines: pack.lines.map((line) => ({
       id: line.id,
@@ -129,9 +146,10 @@ export function presentPack(pack: {
       kind: line.kind,
       commissionBaseSum: money(line.commissionBaseSum),
       commissionSum: money(line.commissionSum),
+      shippingSum: money(line.shippingSum),
+      vendorVatSum: lineVat(line),
       vendorNetSum: money(line.vendorNetSum),
       ruleNetSum: ruleNet(line),
-      shippingSum: money(line.shippingSum),
       orderLineCount: line.orderLineCount,
       feeNotes: line.feeNotes,
       status: line.status,
