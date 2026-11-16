@@ -146,8 +146,27 @@ async function upsertLine(
 
   const vendor = vendorId ? await db.vendor.findUnique({ where: { id: vendorId } }) : null;
   const vatRegistered = Boolean(vendor?.vatRegistered);
-  const vendorVat = vatRegistered ? taxAmount : 0;
-  const delivery = parseDeliveryAllowance(line);
+
+  // If vendor has a configured vatRate, compute VAT from discounted price.
+  // Otherwise fall back to Shopify's tax_lines amount.
+  const discountedGross = roundMoney(gross - discount);
+  const vendorVatRate = vatRegistered && vendor?.vatRate != null ? Number(vendor.vatRate) : null;
+  const vendorVat = vatRegistered
+    ? (vendorVatRate != null ? roundMoney(discountedGross * vendorVatRate) : taxAmount)
+    : 0;
+
+  // Use Shopify line property if present; fall back to vendor's default delivery allowance.
+  const shopifyDelivery = parseDeliveryAllowance(line);
+  const delivery =
+    shopifyDelivery.source === "property"
+      ? shopifyDelivery
+      : vendor?.defaultDeliveryAllowance != null && Number(vendor.defaultDeliveryAllowance) > 0
+        ? { amount: roundMoney(Number(vendor.defaultDeliveryAllowance)), allocation: "vendor" as const, source: "property" as const }
+        : shopifyDelivery;
+
+  const vendorCommission =
+    vendor?.commissionRate != null ? Number(vendor.commissionRate) : rules.commissionRate;
+
   const fulfilledAt = fulfillmentTime(order, line.id);
   const money = calculateCommission({
     gross,
@@ -155,7 +174,7 @@ async function upsertLine(
     vendorVat,
     vatRegistered,
     taxesIncluded,
-    commissionRate: rules.commissionRate,
+    commissionRate: vendorCommission,
     includeVendorVatInNet: rules.includeVendorVatInNet,
     excludeDeliveryAllowanceFromCommissionBase: rules.excludeDeliveryAllowanceFromCommissionBase,
     shippingAmount: 0,
@@ -427,22 +446,37 @@ function recalculateStoredLine(line: StoredLine, payload: RulePayload, now: Date
   );
   const raw = line.order.rawJson as unknown as ShopifyOrder;
   const rawLine = (raw.line_items ?? []).find((item) => String(item.id) === line.shopifyLineId);
-  const delivery = rawLine
+
+  // Delivery: prefer Shopify line property; fall back to vendor's default if set.
+  const shopifyDelivery = rawLine
     ? parseDeliveryAllowance(rawLine)
-    : {
-        amount: Number(line.deliveryAllowance),
-        allocation: line.deliveryAllocation as DeliveryAllocation,
-        source: "default" as const,
-      };
+    : { amount: Number(line.deliveryAllowance), allocation: line.deliveryAllocation as DeliveryAllocation, source: "default" as const };
+  const vendorDefaultDelivery = line.vendor?.defaultDeliveryAllowance != null
+    ? Number(line.vendor.defaultDeliveryAllowance)
+    : null;
+  const delivery =
+    shopifyDelivery.source === "property"
+      ? shopifyDelivery
+      : vendorDefaultDelivery != null && vendorDefaultDelivery > 0
+        ? { amount: roundMoney(vendorDefaultDelivery), allocation: "vendor" as DeliveryAllocation, source: "property" as const }
+        : shopifyDelivery;
+
   const vatRegistered = Boolean(line.vendor?.vatRegistered);
-  const vendorVat = vatRegistered ? Number(line.taxAmount) : 0;
+  // Use vendor vatRate if configured; fall back to stored taxAmount.
+  const vendorVatRate = vatRegistered && line.vendor?.vatRate != null ? Number(line.vendor.vatRate) : null;
+  const discountedGross = roundMoney(Number(line.gross) - Number(line.discount));
+  const vendorVat = vatRegistered
+    ? (vendorVatRate != null ? roundMoney(discountedGross * vendorVatRate) : Number(line.taxAmount))
+    : 0;
+  const vendorCommission =
+    line.vendor?.commissionRate != null ? Number(line.vendor.commissionRate) : payload.commissionRate;
   const money = calculateCommission({
     gross: Number(line.gross),
     discount: Number(line.discount),
     vendorVat,
     vatRegistered,
     taxesIncluded: line.taxesIncluded,
-    commissionRate: payload.commissionRate,
+    commissionRate: vendorCommission,
     includeVendorVatInNet: payload.includeVendorVatInNet,
     excludeDeliveryAllowanceFromCommissionBase: payload.excludeDeliveryAllowanceFromCommissionBase,
     isPlatformOwn: line.isPlatformOwn,

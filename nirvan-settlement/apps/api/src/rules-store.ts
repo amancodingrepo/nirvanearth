@@ -164,3 +164,16 @@ export async function approveRule(
   });
   return updated;
 }
+
+export async function saveAndActivateRule(
+  db: PrismaClient,
+  config: AppConfig,
+  mailer: Mailer,
+  actorEmail: string,
+  patch: unknown,
+) {
+  assertApprover(config, actorEmail);
+  const draft = await createDraftRule(db, config, actorEmail, patch);
+  await submitRule(db, config, mailer, draft.id, actorEmail);
+  return approveRule(db, config, mailer, draft.id, actorEmail);
+}

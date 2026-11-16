@@ -16,7 +16,7 @@ import { executePack, markManualPaid } from "./execute.ts";
 import { ensureSettlementInvoice, invoicePdfForLine } from "./invoice.ts";
 import { ownerReportCsv, ownerSalesReport } from "./owner-report.ts";
 import { applyPayoutEvent, requestBankPayout } from "./payout.ts";
-import { approveRule, createDraftRule, listRules, submitRule } from "./rules-store.ts";
+import { approveRule, createDraftRule, listRules, saveAndActivateRule, submitRule } from "./rules-store.ts";
 import { presentLine, presentPack } from "./serialize.ts";
 import {
   exchangeShopifyCode,
@@ -395,6 +395,9 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
           name: body.name.trim(),
           email: body.email?.trim() || null,
           vatRegistered: Boolean(body.vatRegistered),
+          vatRate: cleanVatRate(body.vatRate),
+          defaultDeliveryAllowance: cleanDeliveryAllowance(body.defaultDeliveryAllowance),
+          commissionRate: cleanCommissionRate(body.commissionRate),
           stripeAccountId: cleanStripeAccount(body.stripeAccountId),
           payoutMethod: cleanPayoutMethod(body.payoutMethod) ?? "stripe_connect",
           bankLabel: cleanBankLabel(body.bankLabel),
@@ -425,6 +428,9 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
         data: {
           name: body.name?.trim() || undefined,
           vatRegistered: body.vatRegistered,
+          vatRate: body.vatRate === undefined ? undefined : cleanVatRate(body.vatRate),
+          defaultDeliveryAllowance: body.defaultDeliveryAllowance === undefined ? undefined : cleanDeliveryAllowance(body.defaultDeliveryAllowance),
+          commissionRate: body.commissionRate === undefined ? undefined : cleanCommissionRate(body.commissionRate),
           stripeAccountId: body.stripeAccountId === undefined ? undefined : cleanStripeAccount(body.stripeAccountId),
           payoutMethod: body.payoutMethod === undefined ? undefined : cleanPayoutMethod(body.payoutMethod),
           bankLabel: body.bankLabel === undefined ? undefined : cleanBankLabel(body.bankLabel),
@@ -551,6 +557,12 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     return { version: await approveRule(db, config, mailer, id, actor) };
   });
 
+  app.put("/api/rules/active", async (request) => {
+    const actor = actorFromRequest(request, config);
+    const version = await saveAndActivateRule(db, config, mailer, actor, request.body ?? {});
+    return { version };
+  });
+
   app.get("/api/lines/:id/invoice", async (request, reply) => {
     const actor = actorFromRequest(request, config);
     const { id } = request.params as { id: string };
@@ -607,6 +619,9 @@ interface VendorBody {
   name?: string;
   email?: string | null;
   vatRegistered?: boolean;
+  vatRate?: number | null;
+  defaultDeliveryAllowance?: number | null;
+  commissionRate?: number | null;
   stripeAccountId?: string | null;
   externalKey?: string;
   webkulSellerId?: string;
@@ -623,6 +638,9 @@ function presentVendor(vendor: {
   name: string;
   email: string | null;
   vatRegistered: boolean;
+  vatRate: unknown;
+  defaultDeliveryAllowance: unknown;
+  commissionRate?: unknown;
   tradeLicenceRef: string | null;
   webkulSellerId: string | null;
   externalKey: string | null;
@@ -638,6 +656,9 @@ function presentVendor(vendor: {
     name: vendor.name,
     email: vendor.email,
     vatRegistered: vendor.vatRegistered,
+    vatRate: vendor.vatRate != null ? Number(vendor.vatRate) : null,
+    defaultDeliveryAllowance: vendor.defaultDeliveryAllowance != null ? Number(vendor.defaultDeliveryAllowance) : null,
+    commissionRate: vendor.commissionRate != null ? Number(vendor.commissionRate) : null,
     tradeLicenceRef: vendor.tradeLicenceRef,
     webkulSellerId: vendor.webkulSellerId,
     externalKey: vendor.externalKey,
@@ -678,6 +699,33 @@ function cleanBankLast4(body: VendorBody): string | null {
   if (!trimmed) return null;
   if (!/^\d{4}$/.test(trimmed)) throw new HttpError(400, "Bank last4 must be 4 digits.");
   return trimmed;
+}
+
+function cleanVatRate(value: number | null | undefined): number | null {
+  if (value == null) return null;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0 || n > 1) {
+    throw new HttpError(400, "vat_rate must be a decimal between 0 and 1 (e.g. 0.05 for 5%).");
+  }
+  return Math.round(n * 10000) / 10000;
+}
+
+function cleanDeliveryAllowance(value: number | null | undefined): number | null {
+  if (value == null) return null;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) {
+    throw new HttpError(400, "default_delivery_allowance must be a non-negative number in AED.");
+  }
+  return Math.round(n * 100) / 100;
+}
+
+function cleanCommissionRate(value: number | null | undefined): number | null {
+  if (value == null) return null;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0 || n > 1) {
+    throw new HttpError(400, "commission_rate must be a decimal between 0 and 1 (e.g. 0.20 for 20%).");
+  }
+  return Math.round(n * 10000) / 10000;
 }
 
 function isUniqueConflict(error: unknown): boolean {

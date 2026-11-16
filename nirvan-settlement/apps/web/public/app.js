@@ -16,27 +16,27 @@ const ICONS = {
 };
 
 const STATUS_LABEL = {
-  qualified: "Payable",
-  blocked: "Held",
-  held: "Held",
-  open: "Not ready",
-  packed: "In settlement",
-  pending_approval: "Needs approval",
+  qualified: "Ready to Pay",
+  blocked: "Waiting (Hold)",
+  held: "Waiting",
+  open: "Waiting",
+  packed: "In Settlement",
+  pending_approval: "Needs Approval",
   approved: "Approved",
-  draft: "Needs review",
-  executing: "Paying",
+  draft: "Review Draft",
+  executing: "Paying...",
   transferred: "Paid",
-  closed: "Finished",
+  closed: "Completed",
   failed: "Failed",
   active: "Active",
-  manual_paid: "Paid by bank",
-  awaiting_manual_payment: "Awaiting bank",
-  manual_bank: "Bank transfer",
+  manual_paid: "Paid by Bank",
+  awaiting_manual_payment: "Awaiting Bank",
+  manual_bank: "Bank Transfer",
   stripe_connect: "Stripe",
-  vat: "VAT",
+  vat: "VAT Registered",
   ready: "Ready",
-  missing: "Not set up",
-  own: "Own sale",
+  missing: "Missing Setup",
+  own: "Nirvan Hamper / Own",
   test: "Test",
   simulated: "Practice",
 };
@@ -239,38 +239,38 @@ function shell(me, dash, health, body) {
   const item = (href, key, label, icon) =>
     `<a href="${href}" ${current === key ? 'aria-current="page"' : ""}>${ICONS[icon]}<span>${label}</span></a>`;
   const titles = {
-    home: "Home",
-    orders: "Orders",
-    vendors: "Vendors",
-    settlements: "Settlements",
-    owner: "Own sales",
-    rules: "Rules",
-    activity: "Activity",
-    system: "System",
+    home: "📊 Dashboard & Monthly Calculations",
+    orders: "📦 Customer Orders",
+    vendors: "🏪 Partner Vendors",
+    settlements: "💰 Monthly Settlements",
+    owner: "🎁 Nirvan Products & Hampers",
+    rules: "⚙️ Marketplace Rules",
+    activity: "📜 Activity Log",
+    system: "🔌 System Health",
   };
   return `
     <div class="admin">
       <aside class="nav">
         <div class="shop">
           <div class="mark">NE</div>
-          <div><strong>Nirvan Earth</strong><span>Settlements</span></div>
+          <div><strong>Nirvan Earth</strong><span>Settlements Admin</span></div>
         </div>
-        ${item("#/", "home", "Home", "home")}
+        ${item("#/", "home", "Dashboard", "home")}
         ${item("#/orders", "orders", "Orders", "orders")}
         ${item("#/vendors", "vendors", "Vendors", "vendors")}
         ${item("#/settlements", "settlements", "Settlements", "settlements")}
-        ${item("#/owner", "owner", "Own sales", "owner")}
+        ${item("#/owner", "owner", "Own Hampers", "owner")}
         ${item("#/rules", "rules", "Rules", "rules")}
-        ${item("#/activity", "activity", "Activity", "activity")}
-        ${item("#/system", "system", "System", "system")}
+        ${item("#/activity", "activity", "Activity Log", "activity")}
+        ${item("#/system", "system", "System Health", "system")}
         <div class="spacer"></div>
         <button class="link" id="logout" type="button">Sign out</button>
       </aside>
       <div class="frame">
         <header class="topbar">
-          <div class="crumb"><strong>${esc(titles[current] || "Home")}</strong></div>
+          <div class="crumb"><strong>${esc(titles[current] || "Dashboard")}</strong></div>
           <div class="top-meta">
-            <span>${esc(me.email)}</span>
+            <span class="user-pill">👤 ${esc(me.email)} ${me.approver ? "· Approver" : ""}</span>
           </div>
         </header>
         ${testBanner(dash, health)}
@@ -445,7 +445,11 @@ function helpRules() {
 
 async function renderHome(me) {
   const { dash, health } = await chrome(me);
-  const [{ packs }, { vendors }] = await Promise.all([api("/api/packs"), api("/api/vendors")]);
+  const [{ packs }, { vendors }, { lines }] = await Promise.all([
+    api("/api/packs"),
+    api("/api/vendors"),
+    api("/api/orders"),
+  ]);
   const month = chosenMonth("month");
   const pack = packs.find((item) => item.yearMonth === month);
   const missing = vendors.filter((vendor) => vendor.active !== false && !vendorPayoutReady(vendor));
@@ -489,21 +493,292 @@ async function renderHome(me) {
       text: "Open it to review, approve, or pay what is still outstanding.",
     });
   }
+
+  // Group month orders vendor-wise for clear table calculation
+  const monthLines = (lines || []).filter((l) => !l.isPlatformOwn && dubaiMonth(l.paidAt) === month);
+  const vendorMap = new Map();
+  for (const v of vendors) {
+    if (v.active !== false) {
+      vendorMap.set(v.id, {
+        vendorId: v.id,
+        vendorName: v.name,
+        vatRegistered: Boolean(v.vatRegistered),
+        payoutMethod: v.payoutMethod || "stripe_connect",
+        stripeAccountId: v.stripeAccountId || null,
+        bankLabel: v.bankLabel || null,
+        bankLast4: v.bankLast4 || null,
+        lines: [],
+        packLine: null,
+      });
+    }
+  }
+
+  if (pack?.lines) {
+    for (const pl of pack.lines) {
+      if (!vendorMap.has(pl.vendorId)) {
+        vendorMap.set(pl.vendorId, {
+          vendorId: pl.vendorId,
+          vendorName: pl.vendorName,
+          vatRegistered: Boolean(pl.vatRegistered),
+          payoutMethod: pl.payoutMethod,
+          stripeAccountId: pl.stripeAccountId,
+          bankLabel: null,
+          bankLast4: null,
+          lines: [],
+          packLine: pl,
+        });
+      } else {
+        vendorMap.get(pl.vendorId).packLine = pl;
+      }
+    }
+  }
+
+  for (const line of monthLines) {
+    if (!line.vendorId) continue;
+    if (!vendorMap.has(line.vendorId)) {
+      vendorMap.set(line.vendorId, {
+        vendorId: line.vendorId,
+        vendorName: line.vendorName || "Vendor",
+        vatRegistered: Boolean(line.vatRegistered),
+        payoutMethod: "stripe_connect",
+        stripeAccountId: null,
+        bankLabel: null,
+        bankLast4: null,
+        lines: [line],
+        packLine: null,
+      });
+    } else {
+      vendorMap.get(line.vendorId).lines.push(line);
+    }
+  }
+
+  const activeVendorSummaries = Array.from(vendorMap.values())
+    .filter((item) => item.lines.length > 0 || item.packLine != null)
+    .sort((a, b) => a.vendorName.localeCompare(b.vendorName));
+
+  const vendorRows = activeVendorSummaries.map((item) => {
+    const count = item.lines.length || item.packLine?.orderLineCount || 0;
+    const baseSales = item.lines.length > 0
+      ? item.lines.reduce((sum, l) => sum + Number(l.commissionBase), 0)
+      : (item.packLine ? Number(item.packLine.commissionBaseSum) : 0);
+    const commission = item.lines.length > 0
+      ? item.lines.reduce((sum, l) => sum + Number(l.commissionAmount), 0)
+      : (item.packLine ? Number(item.packLine.commissionSum) : 0);
+    const delivery = item.lines.length > 0
+      ? item.lines.reduce((sum, l) => sum + Number(l.deliveryAllowance), 0)
+      : (item.packLine ? Number(item.packLine.shippingSum) : 0);
+    const vat = item.lines.length > 0
+      ? item.lines.reduce((sum, l) => sum + Number(l.vendorVat), 0)
+      : 0;
+    const net = item.lines.length > 0
+      ? item.lines.reduce((sum, l) => sum + Number(l.vendorNet), 0)
+      : (item.packLine ? Number(item.packLine.vendorNetSum) : 0);
+    const grossSold = item.lines.length > 0
+      ? item.lines.reduce((sum, l) => sum + (Number(l.gross) - Number(l.discount)), 0)
+      : (baseSales + delivery + vat);
+    const status = item.packLine?.status || (item.lines.length > 0 && item.lines.every((l) => l.status === "qualified") ? "qualified" : "held");
+
+    return {
+      ...item,
+      count,
+      grossSold,
+      baseSales,
+      commission,
+      delivery,
+      vat,
+      net,
+      status,
+    };
+  });
+
+  const totalOrders = vendorRows.reduce((sum, r) => sum + r.count, 0);
+  const totalBase = vendorRows.reduce((sum, r) => sum + r.baseSales, 0);
+  const totalCommission = vendorRows.reduce((sum, r) => sum + r.commission, 0);
+  const totalDelivery = vendorRows.reduce((sum, r) => sum + r.delivery, 0);
+  const totalVat = vendorRows.reduce((sum, r) => sum + r.vat, 0);
+  const totalNet = vendorRows.reduce((sum, r) => sum + r.net, 0);
+
   app.innerHTML = shell(me, dash, health, `
     <div class="page-head">
       <div>
         <h1>${esc(monthLabel(month))}</h1>
-        <p class="page-sub">What can be paid to vendors. Choose another month if this one is empty.</p>
+        <p class="page-sub">Monthly overview and vendor settlement calculations. Choose another month using the buttons below.</p>
       </div>
-      ${pack ? `<a class="secondary" href="#/settlements/${esc(pack.id)}">Open settlement</a>` : `<a class="secondary" href="#/settlements?month=${esc(month)}">Create settlement</a>`}
+      ${pack ? `<a class="primary" href="#/settlements/${esc(pack.id)}">Open Settlement Pack</a>` : `<a class="secondary" href="#/settlements?month=${esc(month)}">Create Settlement</a>`}
     </div>
+
+    <!-- 10-year-old friendly guide callout -->
+    <div class="simple-guide-box">
+      <h3>👋 Welcome to Nirvan Earth Settlements</h3>
+      <p>
+        Here is how the money works: When shoppers buy items on Nirvan Earth, money comes in through Shopify.
+        Nirvan Earth keeps a store fee (20%) to run the marketplace. The remaining 80%, plus any delivery allowance and VAT, belongs to the vendor.
+        Every calculation below is simple arithmetic: <strong>Base Price − 20% Fee + Delivery + VAT = Vendor Payout</strong>.
+      </p>
+    </div>
+
     ${monthSwitchHtml(month)}
     <div class="metrics">
-      <div class="metric"><div class="label">Payable</div><div class="value">${pack ? aed(pack.payableTotal) : "—"}</div></div>
-      <div class="metric"><div class="label">Held</div><div class="value">${pack ? aed(pack.heldTotal) : "—"}</div></div>
-      <div class="metric"><div class="label">Settlement</div><div class="value">${pack ? badge(pack.status) : badge("missing")}</div></div>
-      <div class="metric"><div class="label">All orders on file</div><div class="value">${dash.orders}</div></div>
+      <div class="metric">
+        <div class="label">Total Owed to Vendors</div>
+        <div class="value">${pack ? aed(pack.rulePayableTotal ?? pack.payableTotal) : aed(totalNet)}</div>
+        <div class="subvalue">Net payout to partner sellers</div>
+      </div>
+      <div class="metric">
+        <div class="label">Nirvan Earth Fee (20%)</div>
+        <div class="value">${pack ? aed(pack.commissionTotal) : aed(totalCommission)}</div>
+        <div class="subvalue">Retained store commission</div>
+      </div>
+      <div class="metric">
+        <div class="label">Settlement Status</div>
+        <div class="value">${pack ? badge(pack.status) : badge("missing")}</div>
+        <div class="subvalue">${pack ? "Monthly pack generated" : "No pack created yet"}</div>
+      </div>
+      <div class="metric">
+        <div class="label">Total Order Items</div>
+        <div class="value">${totalOrders}</div>
+        <div class="subvalue">Across ${vendorRows.length} active vendors</div>
+      </div>
     </div>
+
+    <!-- Easy math formula banner for complete clarity -->
+    <div class="calc-callout">
+      <div>
+        <strong>💡 Easy Math: How Vendor Payout is Calculated (Step-by-Step)</strong>
+        <p class="page-sub" style="margin:2px 0 6px;">Every column in the table below adds and subtracts directly so you can verify each amount with simple math:</p>
+        <div class="calc-formula">
+          <span class="pill-math base">Base Product Price</span>
+          <span style="font-size:16px">−</span>
+          <span class="pill-math minus">20% Nirvan Earth Fee</span>
+          <span style="font-size:16px">+</span>
+          <span class="pill-math plus">Delivery in Price</span>
+          <span style="font-size:16px">+</span>
+          <span class="pill-math plus">Vendor VAT</span>
+          <span style="font-size:16px">=</span>
+          <span class="pill-math equals">Vendor Net Payout</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Vendor-wise calculations table -->
+    <section class="card">
+      <div class="card-head" style="display:flex;justify-content:space-between;align-items:center;">
+        <div>
+          <span>Vendor Settlement Table (${esc(monthLabel(month))})</span>
+          <span class="muted" style="display:block;font-size:12px;font-weight:normal;margin-top:2px;">
+            Click <strong>View Orders</strong> to see individual customer order items for each vendor.
+          </span>
+        </div>
+        ${pack ? `<a class="ghost" href="#/settlements/${esc(pack.id)}">Open Settlement Pack →</a>` : ""}
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Vendor</th>
+              <th class="num">Orders</th>
+              <th class="num">Base Product</th>
+              <th class="num">20% Nirvan Fee (-)</th>
+              <th class="num">Delivery in Price (+)</th>
+              <th class="num">Vendor VAT (+)</th>
+              <th class="num">Vendor Payout (=)</th>
+              <th>Status</th>
+              <th>Orders</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${vendorRows.length > 0 ? vendorRows.map((r) => `
+              <tr>
+                <td class="wrap">
+                  <strong>${esc(r.vendorName)}</strong>
+                  <div style="margin-top:2px;">
+                    ${r.vatRegistered ? badge("vat") : `<span class="badge">No VAT</span>`}
+                    ${badge(r.payoutMethod === "manual_bank" ? "manual_bank" : "stripe_connect")}
+                  </div>
+                </td>
+                <td class="num"><strong>${r.count}</strong></td>
+                <td class="num">${aed(r.baseSales)}</td>
+                <td class="num" style="color:var(--critical)">- ${aed(r.commission)}</td>
+                <td class="num" style="color:var(--info)">+ ${aed(r.delivery)}</td>
+                <td class="num" style="color:var(--info)">+ ${aed(r.vat)}</td>
+                <td class="num" style="font-weight:700;color:var(--success);font-size:14px;">= ${aed(r.net)}</td>
+                <td>${badge(r.status)}</td>
+                <td>
+                  <button class="ghost" type="button" data-toggle-vendor-orders="${esc(r.vendorId)}" data-count="${r.count}" aria-expanded="false" style="font-size:12px;padding:4px 8px;">
+                    View Orders (${r.count}) ▾
+                  </button>
+                </td>
+              </tr>
+              <tr class="vendor-orders-row" data-vendor-orders="${esc(r.vendorId)}" hidden>
+                <td colspan="9">
+                  <div style="padding:4px 8px;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                      <strong>Orders for ${esc(r.vendorName)} in ${esc(monthLabel(month))}:</strong>
+                      <a class="ghost" href="#/orders?vendor=${encodeURIComponent(r.vendorName)}&month=${encodeURIComponent(month)}" style="font-size:12px;">
+                        Open in Orders screen →
+                      </a>
+                    </div>
+                    ${r.lines.length > 0 ? `
+                      <table class="sub-table">
+                        <thead>
+                          <tr>
+                            <th>Order #</th>
+                            <th>Item Title</th>
+                            <th>Paid Date</th>
+                            <th class="num">Base Price</th>
+                            <th class="num">20% Fee (-)</th>
+                            <th class="num">Delivery (+)</th>
+                            <th class="num">VAT (+)</th>
+                            <th class="num">Vendor Gets (=)</th>
+                            <th>Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          ${r.lines.map((ol) => `
+                            <tr>
+                              <td><strong>${esc(ol.orderNumber || ol.shopifyOrderId)}</strong></td>
+                              <td>${esc(ol.title)} ${ol.quantity > 1 ? `<span class="muted">× ${ol.quantity}</span>` : ""}</td>
+                              <td>${when(ol.paidAt)}</td>
+                              <td class="num">${aed(ol.commissionBase)}</td>
+                              <td class="num" style="color:var(--critical)">- ${aed(ol.commissionAmount)}</td>
+                              <td class="num" style="color:var(--info)">+ ${aed(ol.deliveryAllowance)}</td>
+                              <td class="num" style="color:var(--info)">+ ${aed(ol.vendorVat)}</td>
+                              <td class="num" style="font-weight:700;color:var(--success)">= ${aed(ol.vendorNet)}</td>
+                              <td>${badge(ol.status)}</td>
+                            </tr>
+                          `).join("")}
+                        </tbody>
+                      </table>
+                    ` : `<div class="empty">Order line details are archived in the settlement pack.</div>`}
+                  </div>
+                </td>
+              </tr>
+            `).join("") : `
+              <tr>
+                <td colspan="9">
+                  <div class="empty">No vendor orders found for ${esc(monthLabel(month))}. Once orders are placed in Shopify, they will appear here with calculations.</div>
+                </td>
+              </tr>
+            `}
+          </tbody>
+          ${vendorRows.length > 0 ? `
+            <tfoot>
+              <tr>
+                <td><strong>TOTAL (${vendorRows.length} vendors)</strong></td>
+                <td class="num"><strong>${totalOrders}</strong></td>
+                <td class="num"><strong>${aed(totalBase)}</strong></td>
+                <td class="num" style="color:var(--critical)"><strong>- ${aed(totalCommission)}</strong></td>
+                <td class="num" style="color:var(--info)"><strong>+ ${aed(totalDelivery)}</strong></td>
+                <td class="num" style="color:var(--info)"><strong>+ ${aed(totalVat)}</strong></td>
+                <td class="num" style="color:var(--success);font-size:14px"><strong>= ${aed(totalNet)}</strong></td>
+                <td colspan="2"></td>
+              </tr>
+            </tfoot>
+          ` : ""}
+        </table>
+      </div>
+    </section>
+
     <section class="card">
       <div class="card-head">Needs attention</div>
       <div class="attn">
@@ -516,6 +791,18 @@ async function renderHome(me) {
   bindChrome();
   for (const button of app.querySelectorAll("[data-month]")) {
     button.addEventListener("click", () => goMonth(`#/?month=${encodeURIComponent(button.dataset.month)}`));
+  }
+  for (const button of app.querySelectorAll("[data-toggle-vendor-orders]")) {
+    button.addEventListener("click", () => {
+      const vendorId = button.dataset.toggleVendorOrders;
+      const row = app.querySelector(`tr[data-vendor-orders="${vendorId}"]`);
+      if (row) {
+        const isHidden = row.hidden;
+        row.hidden = !isHidden;
+        button.setAttribute("aria-expanded", isHidden ? "true" : "false");
+        button.textContent = isHidden ? `Hide Orders (${button.dataset.count}) ▴` : `View Orders (${button.dataset.count}) ▾`;
+      }
+    });
   }
 }
 
@@ -599,13 +886,25 @@ async function renderSettlements(me) {
 
 function payRows(lines, payoutsEnabled) {
   if (!lines.length) return `<div class="empty">Nobody in this list.</div>`;
+  const totOrders = lines.reduce((s, l) => s + l.orderLineCount, 0);
+  const totBase = lines.reduce((s, l) => s + l.commissionBaseSum, 0);
+  const totComm = lines.reduce((s, l) => s + l.commissionSum, 0);
+  const totDeliv = lines.reduce((s, l) => s + l.shippingSum, 0);
+  const totNet = lines.reduce((s, l) => s + (l.ruleNetSum ?? l.vendorNetSum), 0);
   return `
     <div class="table-wrap">
       <table>
         <thead>
           <tr>
-            <th>Vendor</th><th>How they are paid</th><th class="num">Orders</th>
-            <th class="num">Vendor amount</th><th>Status</th><th></th>
+            <th>Vendor</th>
+            <th>How they are paid</th>
+            <th class="num">Orders</th>
+            <th class="num">Base Sales</th>
+            <th class="num">20% Fee (-)</th>
+            <th class="num">Delivery (+)</th>
+            <th class="num">Vendor Payout (=)</th>
+            <th>Status</th>
+            <th></th>
           </tr>
         </thead>
         <tbody>
@@ -613,16 +912,18 @@ function payRows(lines, payoutsEnabled) {
             <tr>
               <td class="wrap">
                 <strong>${esc(line.vendorName)}</strong>
-                <div>${line.vatRegistered ? badge("vat") : `<span class="badge">No VAT</span>`}</div>
-                <div class="muted">Before commission ${aed(line.commissionBaseSum)} · Nirvan Earth keeps ${aed(line.commissionSum)} · Delivery ${aed(line.shippingSum)}</div>
+                <div style="margin-top:2px;">${line.vatRegistered ? badge("vat") : `<span class="badge">No VAT</span>`}</div>
               </td>
               <td class="wrap">
                 ${badge(line.payoutMethod === "manual_bank" ? "manual_bank" : "stripe_connect")}
                 <div class="muted">${line.payoutMethod === "manual_bank" ? "You pay this vendor from the bank" : (line.stripeAccountId ? `Stripe account saved` : "Add a Stripe account before paying")}</div>
                 ${line.stripeAccountId ? `<div class="muted">Account ${esc(line.stripeAccountId)}</div>` : ""}
               </td>
-              <td class="num">${line.orderLineCount}</td>
-              <td class="num">${aed(line.ruleNetSum ?? line.vendorNetSum)}${line.ruleNetSum != null && Math.abs(line.ruleNetSum - line.vendorNetSum) > 0.001 ? `<div class="muted">Already paid ${aed(line.vendorNetSum)}</div>` : ""}</td>
+              <td class="num"><strong>${line.orderLineCount}</strong></td>
+              <td class="num">${aed(line.commissionBaseSum)}</td>
+              <td class="num" style="color:var(--critical)">- ${aed(line.commissionSum)}</td>
+              <td class="num" style="color:var(--info)">+ ${aed(line.shippingSum)}</td>
+              <td class="num" style="font-weight:700;color:var(--success);font-size:14px;">= ${aed(line.ruleNetSum ?? line.vendorNetSum)}${line.ruleNetSum != null && Math.abs(line.ruleNetSum - line.vendorNetSum) > 0.001 ? `<div class="muted" style="font-weight:normal;font-size:11px;">Already paid ${aed(line.vendorNetSum)}</div>` : ""}</td>
               <td>${badge(line.status)}</td>
               <td class="wrap">
                 ${line.invoiceNumber ? `<div><a href="/api/lines/${esc(line.id)}/invoice">Download payment advice</a></div>` : ""}
@@ -635,6 +936,17 @@ function payRows(lines, payoutsEnabled) {
             </tr>
           `).join("")}
         </tbody>
+        <tfoot>
+          <tr>
+            <td colspan="2"><strong>TOTAL</strong></td>
+            <td class="num"><strong>${totOrders}</strong></td>
+            <td class="num"><strong>${aed(totBase)}</strong></td>
+            <td class="num" style="color:var(--critical)"><strong>- ${aed(totComm)}</strong></td>
+            <td class="num" style="color:var(--info)"><strong>+ ${aed(totDeliv)}</strong></td>
+            <td class="num" style="color:var(--success);font-size:14px;"><strong>= ${aed(totNet)}</strong></td>
+            <td colspan="2"></td>
+          </tr>
+        </tfoot>
       </table>
     </div>
   `;
@@ -754,41 +1066,99 @@ function orderPairs(lines) {
   return lines.map((line) => {
     const search = `${line.orderNumber || ""} ${line.shopifyOrderId} ${line.title} ${line.vendorName || ""}`.toLowerCase();
     const flags = orderFlags(line);
+    const deliveryAllowance = Number(line.deliveryAllowance || 0);
+    const vendorVat = Number(line.vendorVat || 0);
+    const commissionAmount = Number(line.commissionAmount || 0);
+    const commissionBase = Number(line.commissionBase || 0);
+    const vendorNet = Number(line.vendorNet || 0);
+
     return `
-      <tr data-line="${esc(line.id)}" data-payable="${flags.payable}" data-held="${flags.held}" data-own="${flags.own}" data-month="${esc(dubaiMonth(line.paidAt))}" data-search="${esc(search)}">
-        <td><button class="ghost" type="button" data-toggle="${esc(line.id)}" aria-expanded="false">Details</button></td>
-        <td>${esc(line.orderNumber || line.shopifyOrderId)}</td>
-        <td class="wrap">${esc(line.title)}</td>
-        <td>${line.isPlatformOwn ? "Nirvan Earth" : esc(line.vendorName || "—")}</td>
-        <td class="num">${aed(line.vendorNet)}</td>
+      <tr data-line="${esc(line.id)}" data-payable="${flags.payable}" data-held="${flags.held}" data-own="${flags.own}" data-month="${esc(dubaiMonth(line.paidAt))}" data-vendor="${esc(line.isPlatformOwn ? "Nirvan Earth" : (line.vendorName || ""))}" data-search="${esc(search)}">
+        <td><button class="ghost" type="button" data-toggle="${esc(line.id)}" aria-expanded="false">Details ▾</button></td>
+        <td><strong>${esc(line.orderNumber || line.shopifyOrderId)}</strong></td>
+        <td class="wrap">${esc(line.title)} ${line.quantity > 1 ? `<span class="muted">× ${line.quantity}</span>` : ""}</td>
+        <td>${line.isPlatformOwn ? "🎁 Nirvan Earth" : `<strong>${esc(line.vendorName || "—")}</strong>`}</td>
+        <td class="num" style="font-weight:700;color:var(--success);font-size:14px;">${line.isPlatformOwn ? "—" : aed(line.vendorNet)}</td>
         <td>${badge(line.status)}${line.isPlatformOwn ? ` ${badge("own")}` : ""}</td>
       </tr>
       <tr class="detail" data-detail="${esc(line.id)}" hidden>
         <td colspan="6">
-          <div class="facts">
-            <div><span>Quantity</span><strong>${line.quantity}</strong></div>
-            <div><span>Sold for</span><strong>${aed(line.gross)}</strong></div>
-            <div><span>Discount</span><strong>${aed(line.discount)}</strong></div>
-            <div><span>Vendor VAT</span><strong>${line.vatRegistered ? aed(line.vendorVat) : "No VAT"}</strong></div>
-            <div><span>Delivery in the price</span><strong>${aed(line.deliveryAllowance || 0)}</strong><span>${Number(line.deliveryAllowance) > 0 ? "Paid to the vendor" : "None on this product"}</span></div>
-            <div><span>Delivery the customer paid</span><strong>${aed(line.orderShippingTotal)}</strong><span>Kept by Nirvan Earth</span></div>
-            <div><span>Nirvan Earth delivery</span><strong>${aed(line.expectedOwnDelivery || 0)}</strong><span>AED 19 when Nirvan Earth products are under AED 199, otherwise free</span></div>
-            <div><span>Amount the 20% uses</span><strong>${aed(line.commissionBase)}</strong></div>
-            <div><span>Nirvan Earth keeps</span><strong>${aed(line.commissionAmount)}</strong></div>
-            <div><span>Delivered</span><strong>${when(line.fulfilledAt)}</strong></div>
-            <div><span>Can be paid after</span><strong>${when(line.returnWindowEndsAt)}</strong></div>
+          <div class="receipt-card">
+            <div class="receipt-head">
+              <div>
+                <strong>🧾 Calculation Breakdown for Order #${esc(line.orderNumber || line.shopifyOrderId)}</strong>
+                <div class="muted">Customer item: ${esc(line.title)} (${line.quantity} item${line.quantity > 1 ? "s" : ""}) · Sold on ${when(line.paidAt)}</div>
+              </div>
+              <div>
+                ${line.isPlatformOwn ? `<span class="badge info">🎁 Nirvan Earth Hamper (100% Retained)</span>` : `<span class="badge success">Vendor Payout: ${aed(vendorNet)}</span>`}
+              </div>
+            </div>
+
+            ${line.isPlatformOwn ? `
+              <div class="receipt-note" style="border-left-color: #2563eb;">
+                🎁 <strong>Nirvan Earth Hamper / Own Product:</strong> All earnings from this item (${aed(line.gross)}) stay directly with Nirvan Earth. No commission is deducted and no vendor payout is made.
+              </div>
+            ` : `
+              <!-- Visual math equation pill line -->
+              <div class="calc-formula" style="margin-bottom: 16px;">
+                <span class="pill-math base">Base Price: ${aed(commissionBase)}</span>
+                <span style="color:var(--critical);font-weight:bold;">−</span>
+                <span class="pill-math minus">Nirvan Fee: ${aed(commissionAmount)}</span>
+                <span style="color:var(--info);font-weight:bold;">+</span>
+                <span class="pill-math plus">Delivery in Price: ${aed(deliveryAllowance)}</span>
+                <span style="color:var(--info);font-weight:bold;">+</span>
+                <span class="pill-math plus">Vendor VAT: ${aed(vendorVat)}</span>
+                <span style="color:var(--success);font-weight:bold;">=</span>
+                <span class="pill-math equals">Vendor Payout: ${aed(vendorNet)}</span>
+              </div>
+
+              <div class="receipt-math-grid">
+                <div>
+                  <span class="muted" style="font-size:11.5px;text-transform:uppercase;">1. Product Sale</span>
+                  <div style="font-size:16px;font-weight:700;">${aed(line.gross)}</div>
+                  ${Number(line.discount) > 0 ? `<div class="muted" style="font-size:11px;">Includes -${aed(line.discount)} customer discount</div>` : ""}
+                </div>
+                <div>
+                  <span class="muted" style="font-size:11.5px;text-transform:uppercase;color:var(--critical);">2. Store Fee (Nirvan Earth)</span>
+                  <div style="font-size:16px;font-weight:700;color:var(--critical);">- ${aed(commissionAmount)}</div>
+                  <div class="muted" style="font-size:11px;">Platform & processing fee</div>
+                </div>
+                <div>
+                  <span class="muted" style="font-size:11.5px;text-transform:uppercase;color:var(--info);">3. Delivery in Price</span>
+                  <div style="font-size:16px;font-weight:700;color:var(--info);">+ ${aed(deliveryAllowance)}</div>
+                  <div class="muted" style="font-size:11px;">${deliveryAllowance > 0 ? "Paid to vendor for dispatch" : "No delivery in product price"}</div>
+                </div>
+                <div>
+                  <span class="muted" style="font-size:11.5px;text-transform:uppercase;color:var(--info);">4. Vendor VAT (Taxes)</span>
+                  <div style="font-size:16px;font-weight:700;color:var(--info);">+ ${aed(vendorVat)}</div>
+                  <div class="muted" style="font-size:11px;">${line.vatRegistered ? "Vendor is VAT registered" : "Vendor has no VAT"}</div>
+                </div>
+                <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:8px 12px;">
+                  <span class="muted" style="font-size:11.5px;text-transform:uppercase;color:var(--success);">5. Final Vendor Payout</span>
+                  <div style="font-size:18px;font-weight:800;color:var(--success);">= ${aed(vendorNet)}</div>
+                  <div class="muted" style="font-size:11px;color:var(--success);">Sent to vendor in settlement pack</div>
+                </div>
+              </div>
+
+              <div class="receipt-note">
+                💡 <strong>Order Timing & Status:</strong>
+                ${line.fulfilledAt ? `Delivered to customer on <strong>${when(line.fulfilledAt)}</strong>.` : "Not marked delivered in Shopify yet."}
+                ${line.returnWindowEndsAt ? ` The 14-day customer return window ends on <strong>${when(line.returnWindowEndsAt)}</strong>. Once that day passes without customer returns, this payout is fully unlocked for payment.` : ""}
+                ${line.blockReason ? `<div style="color:var(--critical);font-weight:600;margin-top:6px;">⚠️ Reason currently held: ${esc(holdReason(line.blockReason))}</div>` : ""}
+              </div>
+            `}
           </div>
-          ${line.blockReason ? `<p class="page-sub">${esc(holdReason(line.blockReason))}</p>` : ""}
         </td>
       </tr>
     `;
   }).join("");
 }
 
-function ordersHash(view, month) {
+function ordersHash(view, month, vendor) {
   const params = new URLSearchParams();
   if (view && view !== "all") params.set("view", view);
   if (month) params.set("month", month);
+  if (vendor) params.set("vendor", vendor);
   const query = params.toString();
   return query ? `#/orders?${query}` : "#/orders";
 }
@@ -798,8 +1168,10 @@ async function renderOrders(me) {
   const { lines } = await api("/api/orders");
   const view = route().query.get("view") || "all";
   const month = route().query.get("month") || "";
+  const vendorParam = route().query.get("vendor") || "";
   const months = [...new Set(lines.map((line) => dubaiMonth(line.paidAt)).filter(Boolean))].sort().reverse();
   if (isYearMonth(month) && !months.includes(month)) months.unshift(month);
+  const vendorList = [...new Set(lines.map((l) => l.isPlatformOwn ? "Nirvan Earth" : (l.vendorName || "")).filter(Boolean))].sort();
   const tab = (key, label) => `<button type="button" data-tab="${key}" aria-selected="${view === key ? "true" : "false"}">${label}</button>`;
   app.innerHTML = shell(me, dash, health, `
     <div class="page-head">
@@ -824,15 +1196,19 @@ async function renderOrders(me) {
         <button class="month-pick" type="button" data-order-month="" aria-pressed="${month ? "false" : "true"}">All months</button>
         ${months.map((item) => `<button class="month-pick" type="button" data-order-month="${esc(item)}" aria-pressed="${month === item ? "true" : "false"}">${esc(shortMonth(item))}</button>`).join("")}
       </div>
-      <div class="filters">
-        <input id="filter" placeholder="Search order, product, or vendor" aria-label="Search orders" />
+      <div class="filters" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+        <input id="filter" placeholder="Search order, product, or vendor" aria-label="Search orders" style="flex:1;min-width:200px;" />
+        <select id="vendor-filter" aria-label="Filter by vendor" style="padding:8px 12px;border:1px solid var(--border);border-radius:8px;background:white;font-size:13px;">
+          <option value="">All vendors (${vendorList.length})</option>
+          ${vendorList.map((v) => `<option value="${esc(v)}" ${vendorParam.toLowerCase() === v.toLowerCase() ? "selected" : ""}>${esc(v)}</option>`).join("")}
+        </select>
       </div>
       <div class="table-wrap">
         <table>
           <thead><tr><th></th><th>Order</th><th>Product</th><th>Vendor</th><th class="num">Paid to vendor</th><th>Status</th></tr></thead>
           <tbody id="order-rows">
             ${orderPairs(lines) || `<tr data-static="empty"><td colspan="6"><div class="empty">No orders yet. They appear after Shopify sends a paid order.</div></td></tr>`}
-            <tr id="filter-empty" hidden><td colspan="6"><div class="empty">Nothing matches this month or search.</div></tr>
+            <tr id="filter-empty" hidden><td colspan="6"><div class="empty">Nothing matches this month, vendor, or search.</div></tr>
           </tbody>
         </table>
       </div>
@@ -843,12 +1219,15 @@ async function renderOrders(me) {
   const applyFilter = () => {
     const selected = app.querySelector('.tabs button[aria-selected="true"]')?.dataset.tab || "all";
     const picked = app.querySelector(".order-months [aria-pressed='true']")?.dataset.orderMonth || "";
+    const pickedVendor = (app.querySelector("#vendor-filter")?.value || "").trim().toLowerCase();
     const query = app.querySelector("#filter").value.trim().toLowerCase();
     let visible = 0;
     for (const row of app.querySelectorAll("#order-rows tr[data-line]")) {
       const text = row.dataset.search || "";
+      const matchesVendor = !pickedVendor || (row.dataset.vendor || "").toLowerCase() === pickedVendor;
       const show = (selected === "all" || row.dataset[selected] === "true")
         && (!picked || row.dataset.month === picked)
+        && matchesVendor
         && text.includes(query);
       row.hidden = !show;
       if (show) visible += 1;
@@ -861,12 +1240,21 @@ async function renderOrders(me) {
     const empty = app.querySelector("#filter-empty");
     if (empty) empty.hidden = visible !== 0 || !app.querySelector("#order-rows tr[data-line]");
   };
+  app.querySelector("#filter")?.addEventListener("input", applyFilter);
+  app.querySelector("#vendor-filter")?.addEventListener("change", () => {
+    const selected = app.querySelector('.tabs button[aria-selected="true"]')?.dataset.tab || "all";
+    const picked = app.querySelector(".order-months [aria-pressed='true']")?.dataset.orderMonth || "";
+    const vendor = app.querySelector("#vendor-filter")?.value || "";
+    history.replaceState(null, "", ordersHash(selected, picked, vendor));
+    applyFilter();
+  });
   for (const button of app.querySelectorAll(".tabs button")) {
     button.addEventListener("click", () => {
       for (const other of app.querySelectorAll(".tabs button")) other.setAttribute("aria-selected", "false");
       button.setAttribute("aria-selected", "true");
       const picked = app.querySelector(".order-months [aria-pressed='true']")?.dataset.orderMonth || "";
-      history.replaceState(null, "", ordersHash(button.dataset.tab, picked));
+      const vendor = app.querySelector("#vendor-filter")?.value || "";
+      history.replaceState(null, "", ordersHash(button.dataset.tab, picked, vendor));
       applyFilter();
     });
   }
@@ -875,7 +1263,8 @@ async function renderOrders(me) {
       for (const other of app.querySelectorAll("[data-order-month]")) other.setAttribute("aria-pressed", "false");
       button.setAttribute("aria-pressed", "true");
       const selected = app.querySelector('.tabs button[aria-selected="true"]')?.dataset.tab || "all";
-      history.replaceState(null, "", ordersHash(selected, button.dataset.orderMonth || ""));
+      const vendor = app.querySelector("#vendor-filter")?.value || "";
+      history.replaceState(null, "", ordersHash(selected, button.dataset.orderMonth || "", vendor));
       applyFilter();
     });
   }
@@ -888,7 +1277,6 @@ async function renderOrders(me) {
       if (detail) detail.hidden = open;
     });
   }
-  app.querySelector("#filter").addEventListener("input", applyFilter);
   applyFilter();
   app.querySelector("#sync").addEventListener("click", async () => {
     try {
@@ -932,22 +1320,33 @@ async function renderVendors(me) {
   app.innerHTML = shell(me, dash, health, `
     <div class="page-head">
       <div>
-        <h1>Vendors</h1>
-        <p class="page-sub">Sellers arrive with their Shopify orders. Set VAT and how they are paid before the first settlement. The full bank account number is not stored.</p>
+        <h1>Partner Vendors</h1>
+        <p class="page-sub">Independent sellers and brands offering items on Nirvan Earth. Configure their VAT rates, delivery allowances, and payout channels.</p>
       </div>
-      ${advice ? "" : `<button class="primary" id="add-vendor" type="button">Add vendor</button>`}
+      ${advice ? "" : `<button class="primary" id="add-vendor" type="button">+ Add Vendor</button>`}
     </div>
+
+    <!-- 10-year-old friendly guide callout -->
+    <div class="simple-guide-box">
+      <h3>🏪 What is a Partner Vendor?</h3>
+      <p>
+        Vendors are partner creators (like artisanal candle makers, honey producers, or organic skincare brands) who sell on Nirvan Earth.
+        Whenever a shopper buys their item, Nirvan keeps a standard 20% platform fee and sends the vendor their net payout.
+        Below, you can customize each vendor's VAT (5%), custom delivery fee, or agreed commission rate!
+      </p>
+    </div>
+
     <nav class="tabs" aria-label="Vendor sections">
-      <a href="#/vendors" aria-selected="${advice ? "false" : "true"}">Vendors</a>
-      <a href="#/vendors/advice" aria-selected="${advice ? "true" : "false"}">Payment advice</a>
+      <a href="#/vendors" aria-selected="${advice ? "false" : "true"}">All Vendors (${vendors.length})</a>
+      <a href="#/vendors/advice" aria-selected="${advice ? "true" : "false"}">Payment Statements</a>
     </nav>
     ${advice ? `
       <section class="card">
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Vendor</th><th>Advice</th><th class="num">Net paid</th><th></th></tr></thead>
+            <thead><tr><th>Vendor</th><th>Statement / Advice #</th><th class="num">Net Paid</th><th></th></tr></thead>
             <tbody>
-              ${adviceRows(vendors) || `<tr><td colspan="4"><div class="empty">No payment advice yet. One is created after a payment.</div></td></tr>`}
+              ${adviceRows(vendors) || `<tr><td colspan="4"><div class="empty">No payment statements yet. They are generated automatically after a settlement is paid.</div></td></tr>`}
             </tbody>
           </table>
         </div>
@@ -956,18 +1355,43 @@ async function renderVendors(me) {
       <section class="card">
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Name</th><th>Seller id</th><th>VAT</th><th>How they are paid</th><th>Status</th><th></th></tr></thead>
+            <thead>
+              <tr>
+                <th>Vendor Name</th>
+                <th>Seller ID</th>
+                <th>VAT Setting</th>
+                <th class="num">Delivery Allowance</th>
+                <th class="num">Store Commission</th>
+                <th>Payout Channel</th>
+                <th>Status</th>
+                <th></th>
+              </tr>
+            </thead>
             <tbody>
               ${vendors.map((vendor) => `
                 <tr>
-                  <td><strong>${esc(vendor.name)}</strong>${vendor.active ? "" : `<div class="muted">Inactive</div>`}</td>
-                  <td>${esc(vendor.webkulSellerId || vendor.externalKey || "—")}</td>
-                  <td>${vendor.vatRegistered ? badge("vat") : `<span class="badge">No VAT</span>`}</td>
+                  <td>
+                    <strong>${esc(vendor.name)}</strong>
+                    ${vendor.active ? "" : `<span class="badge warning" style="margin-left:6px;font-size:10px;">Inactive</span>`}
+                    ${vendor.email ? `<div class="muted" style="font-size:11px;">${esc(vendor.email)}</div>` : ""}
+                  </td>
+                  <td><code>${esc(vendor.webkulSellerId || vendor.externalKey || "—")}</code></td>
+                  <td>
+                    ${vendor.vatRegistered
+                      ? (vendor.vatRate != null ? `<span class="badge success">${(vendor.vatRate * 100).toFixed(0)}% VAT</span>` : badge("vat"))
+                      : `<span class="badge">No VAT</span>`}
+                  </td>
+                  <td class="num">
+                    ${vendor.defaultDeliveryAllowance != null ? `AED ${Number(vendor.defaultDeliveryAllowance).toFixed(2)}` : `<span class="muted">—</span>`}
+                  </td>
+                  <td class="num">
+                    ${vendor.commissionRate != null ? `<span class="badge info">${(vendor.commissionRate * 100).toFixed(0)}% (Custom)</span>` : `<span class="badge">20% (Default)</span>`}
+                  </td>
                   <td>${badge(vendor.payoutMethod === "manual_bank" ? "manual_bank" : "stripe_connect")}</td>
                   <td>${vendorPayoutReady(vendor) ? badge("ready") : badge("missing")}</td>
                   <td><button class="secondary" type="button" data-edit-vendor="${esc(vendor.id)}">Edit</button></td>
                 </tr>
-              `).join("") || `<tr><td colspan="6"><div class="empty">No vendors yet. A new seller is added when Shopify sends their first order.</div></td></tr>`}
+              `).join("") || `<tr><td colspan="8"><div class="empty">No vendors yet. A new seller is automatically registered when Shopify sends their first order.</div></td></tr>`}
             </tbody>
           </table>
         </div>
@@ -976,43 +1400,68 @@ async function renderVendors(me) {
     <div class="drawer-back" id="vendor-drawer" hidden>
       <form class="drawer" id="vendor-form">
         <div class="drawer-head">
-          <h2 id="vendor-form-title">Edit vendor</h2>
+          <h2 id="vendor-form-title">Edit Vendor</h2>
           <button class="secondary" id="vendor-close" type="button">Close</button>
         </div>
-        <p class="page-sub">Set VAT and payout before the first settlement. Sellers do not log in here.</p>
+        <p class="page-sub">Configure seller payout options and tax rules. Sellers do not log in to this admin dashboard.</p>
         <section class="drawer-section">
-          <h3>Profile</h3>
-          <div class="field"><label for="v-name">Name</label><input id="v-name" name="name" required /></div>
-          <div class="field"><label for="v-seller">Seller id</label><input id="v-seller" name="webkulSellerId" /></div>
-          <div class="field"><label for="v-email">Email</label><input id="v-email" name="email" type="email" /></div>
-          <label class="check"><input id="v-active" name="active" type="checkbox" checked /> Active</label>
+          <h3>1. Basic Profile</h3>
+          <div class="field"><label for="v-name">Vendor or Brand Name</label><input id="v-name" name="name" required placeholder="e.g. Desert Honey Co." /></div>
+          <div class="field"><label for="v-seller">Shopify / Webkul Seller ID</label><input id="v-seller" name="webkulSellerId" placeholder="e.g. 52" /></div>
+          <div class="field"><label for="v-email">Contact Email</label><input id="v-email" name="email" type="email" placeholder="vendor@example.com" /></div>
+          <label class="check"><input id="v-active" name="active" type="checkbox" checked /> Active (receives orders)</label>
         </section>
+
         <section class="drawer-section">
-          <h3>VAT</h3>
-          <label class="check"><input id="v-vat" name="vatRegistered" type="checkbox" /> VAT registered</label>
-          <p class="page-sub">Off until you confirm it. Shopify tax is not treated as vendor VAT while this is off.</p>
+          <h3>2. VAT & Tax Settings</h3>
+          <label class="check"><input id="v-vat" name="vatRegistered" type="checkbox" /> VAT Registered Seller</label>
+          <p class="page-sub">When unchecked, Shopify taxes are ignored for this vendor. When checked, VAT is passed through to the vendor.</p>
+          <div class="field" id="vat-rate-field" style="margin-top:10px;">
+            <label for="v-vat-rate">Custom VAT Rate (%)</label>
+            <input id="v-vat-rate" name="vatRate" type="number" min="0" max="100" step="0.01" placeholder="e.g. 5 for 5%" />
+            <p class="page-sub">Enter 5 for standard UAE 5% VAT. Leave blank to use Shopify tax line values directly.</p>
+          </div>
         </section>
+
         <section class="drawer-section">
-          <h3>Payout</h3>
-          <div class="field"><label for="v-method">How they are paid</label>
+          <h3>3. Delivery Allowance</h3>
+          <div class="field">
+            <label for="v-delivery">Default Delivery in Product Price (AED)</label>
+            <input id="v-delivery" name="defaultDeliveryAllowance" type="number" min="0" step="0.01" placeholder="e.g. 20" />
+            <p class="page-sub">If this vendor includes delivery in their product prices, enter the AED amount here. It will be excluded from the 20% commission and paid 100% to the vendor.</p>
+          </div>
+        </section>
+
+        <section class="drawer-section">
+          <h3>4. Custom Commission Rate</h3>
+          <div class="field">
+            <label for="v-commission">Custom Store Fee (%)</label>
+            <input id="v-commission" name="commissionRate" type="number" min="0" max="100" step="0.1" placeholder="Leave empty for marketplace default (20%)" />
+            <p class="page-sub">Leave blank to use the standard 20% platform fee. If this vendor has a negotiated rate (e.g. 15%), enter 15.</p>
+          </div>
+        </section>
+
+        <section class="drawer-section">
+          <h3>5. Payout Channel</h3>
+          <div class="field"><label for="v-method">How should this vendor be paid?</label>
             <select id="v-method" name="payoutMethod">
-              <option value="stripe_connect">Stripe</option>
-              <option value="manual_bank">Bank transfer</option>
+              <option value="stripe_connect">Stripe Connect (Automated Transfer)</option>
+              <option value="manual_bank">Direct Bank Transfer (Manual)</option>
             </select>
           </div>
           <div id="payout-connect">
-            <div class="field"><label for="v-acct">Stripe account</label><input id="v-acct" name="stripeAccountId" placeholder="acct_…" autocomplete="off" /></div>
-            <p class="page-sub">Use this when Stripe pays the vendor. The account starts with acct_.</p>
+            <div class="field"><label for="v-acct">Stripe Connected Account ID</label><input id="v-acct" name="stripeAccountId" placeholder="acct_1..." autocomplete="off" /></div>
+            <p class="page-sub">When approved, Nirvan transfers money directly to their Stripe account in 1 click.</p>
           </div>
           <div id="payout-manual" hidden>
-            <div class="field"><label for="v-bank">Bank name</label><input id="v-bank" name="bankLabel" placeholder="Bank name" autocomplete="off" /></div>
-            <div class="field"><label for="v-last4">Last 4 digits</label><input id="v-last4" name="bankLast4" inputmode="numeric" maxlength="4" autocomplete="off" /></div>
-            <p class="page-sub">You pay this vendor yourself, then mark the settlement as paid.</p>
+            <div class="field"><label for="v-bank">Bank Name & Branch</label><input id="v-bank" name="bankLabel" placeholder="e.g. Emirates NBD" autocomplete="off" /></div>
+            <div class="field"><label for="v-last4">Bank Account Last 4 Digits</label><input id="v-last4" name="bankLast4" inputmode="numeric" maxlength="4" placeholder="e.g. 4821" autocomplete="off" /></div>
+            <p class="page-sub">You pay this vendor through your corporate bank portal, then click "I have paid" in the settlement.</p>
           </div>
         </section>
         <p class="msg" id="msg"></p>
         <div class="drawer-actions">
-          <button class="primary" type="submit">Save</button>
+          <button class="primary" type="submit">Save Vendor Settings</button>
         </div>
       </form>
     </div>
@@ -1030,12 +1479,15 @@ async function renderVendors(me) {
 
   function openVendor(vendor) {
     form.dataset.id = vendor?.id || "";
-    app.querySelector("#vendor-form-title").textContent = vendor ? "Edit vendor" : "Add vendor";
+    app.querySelector("#vendor-form-title").textContent = vendor ? "Edit Vendor" : "Add Vendor";
     form.name.value = vendor?.name || "";
     form.webkulSellerId.value = vendor?.webkulSellerId || vendor?.externalKey || "";
     form.email.value = vendor?.email || "";
     form.active.checked = vendor ? vendor.active !== false : true;
     form.vatRegistered.checked = Boolean(vendor?.vatRegistered);
+    form.vatRate.value = vendor?.vatRate != null ? (Number(vendor.vatRate) * 100).toFixed(2).replace(/\.00$/, "") : "";
+    form.defaultDeliveryAllowance.value = vendor?.defaultDeliveryAllowance != null ? String(Number(vendor.defaultDeliveryAllowance)) : "";
+    form.commissionRate.value = vendor?.commissionRate != null ? (Number(vendor.commissionRate) * 100).toFixed(2).replace(/\.00$/, "") : "";
     form.payoutMethod.value = vendor?.payoutMethod === "manual_bank" ? "manual_bank" : "stripe_connect";
     form.stripeAccountId.value = vendor?.stripeAccountId || "";
     form.bankLabel.value = vendor?.bankLabel || "";
@@ -1068,6 +1520,9 @@ async function renderVendors(me) {
       email: form.email.value,
       active: form.active.checked,
       vatRegistered: form.vatRegistered.checked,
+      vatRate: form.vatRate.value.trim() !== "" ? Number(form.vatRate.value) / 100 : null,
+      defaultDeliveryAllowance: form.defaultDeliveryAllowance.value.trim() !== "" ? Number(form.defaultDeliveryAllowance.value) : null,
+      commissionRate: form.commissionRate.value.trim() !== "" ? Number(form.commissionRate.value) / 100 : null,
       payoutMethod: manual ? "manual_bank" : "stripe_connect",
       stripeAccountId: manual ? undefined : form.stripeAccountId.value,
       bankLabel: manual ? form.bankLabel.value : undefined,
@@ -1207,28 +1662,68 @@ async function renderOwner(me) {
       earlier = null;
     }
   }
+  const netEarnings = Math.max(0, Number(report.gross || 0) - Number(report.discount || 0));
+
   app.innerHTML = shell(me, dash, health, `
     <div class="page-head">
       <div>
-        <h1>Own sales</h1>
-        <p class="page-sub">Nirvan Earth products and gift hampers. These are not paid to a vendor.</p>
+        <h1>🎁 Nirvan Products & Gift Hampers</h1>
+        <p class="page-sub">Exclusive products and gift hampers sold directly by Nirvan Earth. 100% of these sales stay with Nirvan Earth — zero vendor payouts!</p>
       </div>
-      <a class="secondary" href="/api/reports/owner?period=${esc(period)}&format=csv">Download list</a>
+      <a class="secondary" href="/api/reports/owner?period=${esc(period)}&format=csv">Download CSV Report</a>
     </div>
+
+    <!-- 10-year-old friendly guide callout -->
+    <div class="simple-guide-box">
+      <h3>🎁 What are Own Sales & Gift Hampers?</h3>
+      <p>
+        These are gift boxes, hampers, and special collections created directly by Nirvan Earth.
+        Because there is no third-party seller involved, <strong>zero commission is charged and no vendor payout is made</strong>.
+        All proceeds from these sales remain 100% with Nirvan Earth!
+      </p>
+    </div>
+
     ${monthSwitchHtml(period)}
     ${earlier ? `<div class="banner info"><div><strong>${esc(monthLabel(earlier.period))} has ${earlier.lineCount} own sale${earlier.lineCount === 1 ? "" : "s"}</strong>${esc(monthLabel(period))} has none. The total in ${esc(monthLabel(earlier.period))} is ${aed(earlier.gross)}. <button class="secondary" type="button" id="show-earlier">Show ${esc(monthLabel(earlier.period))}</button></div></div>` : ""}
     <div class="metrics">
-      <div class="metric"><div class="label">Month</div><div class="value" style="font-size:18px">${esc(monthLabel(report.period || period))}</div></div>
-      <div class="metric"><div class="label">Gross</div><div class="value">${aed(report.gross)}</div></div>
-      <div class="metric"><div class="label">Discounts</div><div class="value">${aed(report.discount)}</div></div>
-      <div class="metric"><div class="label">Tax</div><div class="value">${aed(report.tax)}</div></div>
+      <div class="metric">
+        <div class="label">Gross Sales</div>
+        <div class="value">${aed(report.gross)}</div>
+        <div class="subvalue">${report.lineCount || 0} hamper/own items sold</div>
+      </div>
+      <div class="metric">
+        <div class="label">Customer Discounts</div>
+        <div class="value">${aed(report.discount)}</div>
+        <div class="subvalue">Coupons & cart discounts</div>
+      </div>
+      <div class="metric">
+        <div class="label">Taxes (VAT)</div>
+        <div class="value">${aed(report.tax)}</div>
+        <div class="subvalue">Taxes collected</div>
+      </div>
+      <div class="metric">
+        <div class="label">Net Kept by Nirvan Earth</div>
+        <div class="value" style="color:var(--success);font-size:24px;">${aed(netEarnings)}</div>
+        <div class="subvalue">100% retained revenue</div>
+      </div>
     </div>
     <section class="card">
+      <div class="card-head">Items Sold in ${esc(monthLabel(report.period || period))}</div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Order</th><th>Product</th><th class="num">Gross</th><th class="num">Discount</th><th class="num">Tax</th></tr></thead>
+          <thead><tr><th>Order #</th><th>Item Title</th><th class="num">Sold For</th><th class="num">Discount</th><th class="num">Tax</th><th class="num">Net Kept (=)</th></tr></thead>
           <tbody>
-            ${(report.lines || []).map((line) => `<tr><td>${esc(line.orderNumber)}</td><td class="wrap">${esc(line.title)}</td><td class="num">${aed(line.gross)}</td><td class="num">${aed(line.discount)}</td><td class="num">${aed(line.tax)}</td></tr>`).join("") || `<tr><td colspan="5"><div class="empty">No Nirvan Earth sales in ${esc(monthLabel(period))}.</div></td></tr>`}
+            ${(report.lines || []).map((line) => {
+              const itemNet = Math.max(0, Number(line.gross || 0) - Number(line.discount || 0));
+              return `<tr>
+                <td><strong>${esc(line.orderNumber)}</strong></td>
+                <td class="wrap">${esc(line.title)}</td>
+                <td class="num">${aed(line.gross)}</td>
+                <td class="num" style="color:var(--critical)">${Number(line.discount) > 0 ? `- ${aed(line.discount)}` : "—"}</td>
+                <td class="num">${aed(line.tax)}</td>
+                <td class="num" style="font-weight:700;color:var(--success);">= ${aed(itemNet)}</td>
+              </tr>`;
+            }).join("") || `<tr><td colspan="6"><div class="empty">No Nirvan Earth own sales or hampers in ${esc(monthLabel(period))}.</div></td></tr>`}
           </tbody>
         </table>
       </div>
@@ -1254,103 +1749,184 @@ async function renderRules(me) {
   const { versions } = await api("/api/rules");
   const active = versions.find((version) => version.status === "active");
   const payload = active && active.payload ? active.payload : {};
+  const currentCommPct = Math.round(Number(payload.commissionRate ?? 0.2) * 1000) / 10;
+  const currentWindowDays = Number(payload.returnWindowDays ?? 14);
+
   app.innerHTML = shell(me, dash, health, `
     <div class="page-head">
       <div>
-        <h1>Rules</h1>
-        <p class="page-sub">The rules used for new settlements. A change applies only after ${esc(dash.notifyEmail || "the approver")} approves it.</p>
+        <h1>Marketplace Rules</h1>
+        <p class="page-sub">The core rules governing how much Nirvan Earth keeps, when vendors get paid, and how gift hampers are handled.</p>
       </div>
       <div>${active ? badge("active") : badge("missing")}</div>
     </div>
-    <div class="banner warning"><div><strong>Closed settlements stay as they were</strong>Approving a new version does not change a closed settlement and does not change money already paid.</div></div>
-    <div class="metrics">
-      <div class="metric"><div class="label">Version</div><div class="value" style="font-size:18px">${esc(active?.versionLabel || payload.rulesVersion || "—")}</div></div>
-      <div class="metric"><div class="label">Commission</div><div class="value">${esc(percent(payload.commissionRate ?? 0.2))}</div></div>
-      <div class="metric"><div class="label">Return window</div><div class="value">${esc(payload.returnWindowDays ?? 14)} days</div></div>
-      <div class="metric"><div class="label">Vendor VAT in the amount</div><div class="value" style="font-size:16px">${payload.includeVendorVatInNet === false ? "Left out" : "Added"}</div></div>
+
+    <!-- 10-year-old friendly guide callout -->
+    <div class="simple-guide-box">
+      <h3>⚙️ How Do Marketplace Rules Work? (Simple Explanation)</h3>
+      <p>
+        Think of Nirvan Earth like a big friendly shopping mall:
+      </p>
+      <ul>
+        <li><strong>Store Commission (Default 20%):</strong> When a partner sells something for AED 100, Nirvan Earth keeps AED 20 to run the store, process card payments, and market products. The seller receives the remaining AED 80 (+ VAT & delivery).</li>
+        <li><strong>Return Window (Default 14 Days):</strong> When a customer gets an item, they have 14 days to make sure it's perfect. Nirvan safely holds the seller's money during these 14 days so nobody loses money if there's a return!</li>
+        <li><strong>Gift Hampers:</strong> Gift hampers made by Nirvan Earth are 100% our own — zero commission or vendor payouts!</li>
+      </ul>
     </div>
-    <section class="card">
-      <div class="card-body">
-        <p>Delivery already included in a product price is paid to the vendor and is not part of the commission. Delivery a customer pays on a Nirvan Earth product stays with Nirvan Earth: AED 19 when those products are under AED 199, and free from AED 199. Other vendors' products do not add that charge.</p>
-        <p class="muted">Own-product tags: ${esc((payload.platformOwnTags || []).join(", ") || "—")}</p>
-        <p class="muted">Own-product names: ${esc((payload.platformOwnVendorNames || []).join(", ") || "—")}</p>
-      </div>
-    </section>
-    <details class="fold">
-      <summary>Propose a new version</summary>
-      <form id="rule-form" class="propose">
+
+    <!-- Direct 1-Click Editable Rules Card -->
+    <section class="rules-editor-card">
+      <h2>✏️ Quick Rule Settings (Instant Update)</h2>
+      <p class="page-sub">You can adjust the store-wide commission percentage, customer return window, and delivery rules below. Click Save to activate immediately for all future settlements.</p>
+
+      <form id="quick-rule-form" style="margin-top:16px;">
         <div class="form-grid">
-          <div class="field"><label for="rule-version">Name for this version</label><input id="rule-version" name="versionLabel" value="${esc(payload.rulesVersion || "2026-11-11")}" /></div>
-          <div class="field"><label for="rule-rate">Commission percent</label><input id="rule-rate" name="commissionRate" value="${esc(Math.round(Number(payload.commissionRate ?? 0.2) * 1000) / 10)}" inputmode="decimal" /></div>
-          <div class="field"><label for="rule-window">Return window, in days</label><input id="rule-window" name="returnWindowDays" value="${esc(payload.returnWindowDays ?? 14)}" inputmode="numeric" /></div>
+          <div class="field">
+            <label for="qr-commission">Store Commission Rate (%)</label>
+            <input id="qr-commission" type="number" min="0" max="100" step="0.5" value="${currentCommPct}" required />
+            <span class="hint">Standard store fee (e.g. 20 for 20%)</span>
+          </div>
+          <div class="field">
+            <label for="qr-window">Customer Return Window (Days)</label>
+            <input id="qr-window" type="number" min="0" max="90" step="1" value="${currentWindowDays}" required />
+            <span class="hint">Days to hold payout before order is ready (e.g. 14)</span>
+          </div>
+          <div class="field">
+            <label for="qr-tags">Own-Product Tags</label>
+            <input id="qr-tags" value="${esc((payload.platformOwnTags || ["nirvan-own", "gift-hamper"]).join(", "))}" />
+            <span class="hint">Comma-separated Shopify tags for 100% Nirvan items</span>
+          </div>
         </div>
-        <div class="form-grid" style="margin-top:12px">
-          <div class="field"><label for="rule-tags">Own-product tags</label><input id="rule-tags" name="platformOwnTags" value="${esc((payload.platformOwnTags || []).join(", "))}" /></div>
-          <div class="field"><label for="rule-names">Own-product vendor names</label><input id="rule-names" name="platformOwnVendorNames" value="${esc((payload.platformOwnVendorNames || []).join(", "))}" /></div>
+
+        <div style="display:flex;flex-wrap:wrap;gap:20px;margin-top:16px;padding:12px 16px;background:#ffffff;border:1px solid #bfdbfe;border-radius:8px;">
+          <label class="check">
+            <input id="qr-vat" type="checkbox" ${payload.includeVendorVatInNet === false ? "" : "checked"} />
+            Include Vendor VAT in Vendor Payout (Recommended)
+          </label>
+          <label class="check">
+            <input id="qr-delivery" type="checkbox" ${payload.excludeDeliveryAllowanceFromCommissionBase === false ? "" : "checked"} />
+            Pay Included Delivery Allowance to Vendor without Commission (Recommended)
+          </label>
         </div>
-        <p class="page-sub">Type 20 for a 20% commission. Separate tags and names with commas.</p>
-        <label class="check"><input type="checkbox" name="includeVendorVatInNet" ${payload.includeVendorVatInNet === false ? "" : "checked"} /> Add vendor VAT back into the vendor amount</label>
-        <label class="check"><input type="checkbox" name="excludeDeliveryAllowanceFromCommissionBase" ${payload.excludeDeliveryAllowanceFromCommissionBase === false ? "" : "checked"} /> Leave delivery allowance out of the commission base</label>
-        <div class="form-grid" style="margin-top:12px">
-          <div class="field"><label for="rule-from">Starts on</label><input id="rule-from" name="effectiveFrom" type="date" value="${esc(String(payload.effectiveFrom || "").slice(0, 10))}" /></div>
-          <div class="field"><label for="rule-notes">Why this change</label><input id="rule-notes" name="notes" value="${esc(payload.notes || "")}" /></div>
+
+        <!-- Live interactive calculation preview -->
+        <div class="live-preview-box">
+          <h4>🧮 Live Calculation Preview (Try Changing Commission Above)</h4>
+          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+            <span>Sample customer item price: <strong>AED 100.00</strong></span>
+            <span>→</span>
+            <span id="preview-commission" style="color:var(--critical);font-weight:700;">Nirvan Fee: -AED 20.00 (20%)</span>
+            <span>→</span>
+            <span id="preview-net" style="color:var(--success);font-weight:750;font-size:15px;">Vendor Payout: = AED 80.00</span>
+          </div>
         </div>
-        <div class="page-actions" style="margin-top:12px"><button class="primary" type="submit">Save this change</button></div>
-        <p class="msg" id="msg"></p>
+
+        <div style="display:flex;align-items:center;gap:12px;margin-top:18px;">
+          <button class="primary" id="btn-save-quick-rule" type="submit" style="height:38px;padding:0 20px;font-size:13.5px;background:#15803d;border-color:#15803d;">
+            💾 Save &amp; Activate Rules Immediately
+          </button>
+          <span class="msg" id="quick-rule-msg" style="margin:0;"></span>
+        </div>
       </form>
-    </details>
+    </section>
+
+    <!-- Current active summary -->
+    <div class="metrics">
+      <div class="metric"><div class="label">Active Ruleset</div><div class="value" style="font-size:18px">${esc(active?.versionLabel || payload.rulesVersion || "—")}</div></div>
+      <div class="metric"><div class="label">Platform Commission</div><div class="value">${esc(percent(payload.commissionRate ?? 0.2))}</div></div>
+      <div class="metric"><div class="label">Return Holding Period</div><div class="value">${esc(payload.returnWindowDays ?? 14)} days</div></div>
+      <div class="metric"><div class="label">Vendor VAT in Payout</div><div class="value" style="font-size:16px">${payload.includeVendorVatInNet === false ? "Excluded" : "Added to Payout"}</div></div>
+    </div>
+
+    <!-- Rule Versions Audit Table -->
     <section class="card">
-      <div class="card-head">Version history</div>
+      <div class="card-head">Rules History &amp; Audit Log</div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Version</th><th>Status</th><th>Commission</th><th></th></tr></thead>
+          <thead><tr><th>Version Label</th><th>Status</th><th>Commission Rate</th><th>Return Window</th><th>Actions</th></tr></thead>
           <tbody>
             ${versions.map((version) => `<tr>
-              <td>${esc(version.versionLabel)}</td>
+              <td><strong>${esc(version.versionLabel)}</strong></td>
               <td>${badge(version.status)}</td>
-              <td>${esc(version.payload && version.payload.commissionRate != null ? percent(version.payload.commissionRate) : "")}</td>
+              <td>${esc(version.payload && version.payload.commissionRate != null ? percent(version.payload.commissionRate) : "20%")}</td>
+              <td>${esc(version.payload?.returnWindowDays != null ? `${version.payload.returnWindowDays} days` : "14 days")}</td>
               <td>
                 ${version.status === "draft" ? `<button class="secondary" type="button" data-submit="${esc(version.id)}">Send for approval</button>` : ""}
                 ${version.status === "pending_approval" && me.approver ? `<button class="primary" type="button" data-approve="${esc(version.id)}">Approve</button>` : ""}
+                ${version.status === "active" ? `<span class="badge success">In Use</span>` : ""}
               </td>
-            </tr>`).join("") || `<tr><td colspan="4"><div class="empty">No rule versions yet.</div></td></tr>`}
+            </tr>`).join("") || `<tr><td colspan="5"><div class="empty">No rule versions recorded yet.</div></td></tr>`}
           </tbody>
         </table>
       </div>
     </section>
   `);
   bindChrome();
-  const say = (error) => {
-    const node = app.querySelector("#msg");
-    if (node) node.textContent = error?.message || error || "";
+
+  const commInput = app.querySelector("#qr-commission");
+  const previewComm = app.querySelector("#preview-commission");
+  const previewNet = app.querySelector("#preview-net");
+  const updatePreview = () => {
+    const rate = Math.max(0, Math.min(100, Number(commInput.value || 0)));
+    const fee = (100 * (rate / 100)).toFixed(2);
+    const net = (100 - fee).toFixed(2);
+    if (previewComm) previewComm.textContent = `Nirvan Fee: -AED ${fee} (${rate}%)`;
+    if (previewNet) previewNet.textContent = `Vendor Payout: = AED ${net}`;
   };
-  app.querySelector("#rule-form").addEventListener("submit", async (event) => {
+  commInput?.addEventListener("input", updatePreview);
+
+  const quickForm = app.querySelector("#quick-rule-form");
+  quickForm?.addEventListener("submit", async (event) => {
     event.preventDefault();
-    const form = event.currentTarget;
-    const body = {
-      versionLabel: form.versionLabel.value,
-      commissionRate: Number(form.commissionRate.value) / 100,
-      returnWindowDays: Number(form.returnWindowDays.value),
-      platformOwnTags: form.platformOwnTags.value.split(",").map((item) => item.trim()).filter(Boolean),
-      platformOwnVendorNames: form.platformOwnVendorNames.value.split(",").map((item) => item.trim()).filter(Boolean),
-      includeVendorVatInNet: form.includeVendorVatInNet.checked,
-      excludeDeliveryAllowanceFromCommissionBase: form.excludeDeliveryAllowanceFromCommissionBase.checked,
-      effectiveFrom: form.effectiveFrom.value,
-      notes: form.notes.value,
-      rulesVersion: form.versionLabel.value,
-    };
-    try { await api("/api/rules", { method: "POST", body }); await render(); } catch (error) { say(error); }
+    const msgNode = app.querySelector("#quick-rule-msg");
+    const commRateVal = Number(app.querySelector("#qr-commission").value) / 100;
+    const windowDaysVal = Number(app.querySelector("#qr-window").value);
+    const tagsVal = app.querySelector("#qr-tags").value.split(",").map((s) => s.trim()).filter(Boolean);
+    const vatVal = app.querySelector("#qr-vat").checked;
+    const delivVal = app.querySelector("#qr-delivery").checked;
+
+    if (msgNode) {
+      msgNode.className = "msg";
+      msgNode.textContent = "Saving and activating rules...";
+    }
+
+    try {
+      const todayStr = new Date().toISOString().slice(0, 10);
+      await api("/api/rules/active", {
+        method: "PUT",
+        body: {
+          rulesVersion: `v-${todayStr}`,
+          commissionRate: commRateVal,
+          returnWindowDays: windowDaysVal,
+          includeVendorVatInNet: vatVal,
+          excludeDeliveryAllowanceFromCommissionBase: delivVal,
+          platformOwnTags: tagsVal,
+          notes: `Updated directly by ${me.email} on ${todayStr}`,
+        },
+      });
+      if (msgNode) {
+        msgNode.className = "msg success";
+        msgNode.textContent = "✅ Rules saved & activated successfully!";
+      }
+      setTimeout(() => render(), 700);
+    } catch (err) {
+      if (msgNode) {
+        msgNode.className = "msg";
+        msgNode.textContent = err.message || "Failed to update rules.";
+      }
+    }
   });
+
   for (const button of app.querySelectorAll("[data-submit]")) {
     button.addEventListener("click", async () => {
-      try { await api(`/api/rules/${button.dataset.submit}/submit`, { method: "POST" }); await render(); } catch (error) { say(error); }
+      try { await api(`/api/rules/${button.dataset.submit}/submit`, { method: "POST" }); await render(); } catch (error) { alert(error.message); }
     });
   }
   for (const button of app.querySelectorAll("[data-approve]")) {
     button.addEventListener("click", async () => {
-      const ok = await ask("Approve this rule?", "New settlements use it after approval. Closed settlements and money already paid stay as they are.", "Approve");
+      const ok = await ask("Approve this rule?", "New settlements will use it. Closed settlements and money already paid stay as they are.", "Approve");
       if (!ok) return;
-      try { await api(`/api/rules/${button.dataset.approve}/approve`, { method: "POST" }); await render(); } catch (error) { say(error); }
+      try { await api(`/api/rules/${button.dataset.approve}/approve`, { method: "POST" }); await render(); } catch (error) { alert(error.message); }
     });
   }
 }

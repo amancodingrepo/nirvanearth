@@ -20,6 +20,9 @@ model Vendor {
   name              String
   email             String?
   vatRegistered     Boolean  @default(false) @map("vat_registered")
+  vatRate           Decimal? @map("vat_rate") @db.Decimal(6, 4)
+  defaultDeliveryAllowance Decimal? @map("default_delivery_allowance") @db.Decimal(12, 2)
+  commissionRate    Decimal? @map("commission_rate") @db.Decimal(5, 4)
   tradeLicenceRef   String?  @map("trade_licence_ref")
   webkulSellerId    String?  @unique @map("webkul_seller_id")
   externalKey       String?  @unique @map("external_key")
