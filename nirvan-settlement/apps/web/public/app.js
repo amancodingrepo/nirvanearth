@@ -825,61 +825,403 @@ function settlementSteps(status) {
 
 async function renderSettlements(me) {
   const { dash, health } = await chrome(me);
-  const { packs } = await api("/api/packs");
-  const month = chosenMonth("month");
-  const existing = packs.find((pack) => pack.yearMonth === month);
+  const [{ packs }, { vendors }, { lines }] = await Promise.all([
+    api("/api/packs"),
+    api("/api/vendors"),
+    api("/api/orders"),
+  ]);
+
+  const view = route().query.get("view") || "vendors";
+  const monthParam = route().query.get("month") || "";
+  const vendorParam = (route().query.get("vendor") || "").trim().toLowerCase();
+
+  // Distinct months from packs and orders
+  const allMonths = [...new Set([
+    ...packs.map((p) => p.yearMonth),
+    ...lines.map((l) => dubaiMonth(l.paidAt)),
+  ].filter(Boolean))].sort().reverse();
+
+  const selectedMonth = monthParam === "all" ? "all" : (monthParam || chosenMonth("month"));
+  const existingPack = packs.find((pack) => pack.yearMonth === selectedMonth);
+
+  // Build vendor rows for selected month (or all months if "all" is picked)
+  const targetMonths = selectedMonth === "all" ? allMonths : [selectedMonth];
+  const allVendorRows = [];
+
+  for (const m of targetMonths) {
+    const pack = packs.find((p) => p.yearMonth === m);
+    const mLines = (lines || []).filter((l) => !l.isPlatformOwn && dubaiMonth(l.paidAt) === m);
+    const vMap = new Map();
+
+    for (const v of vendors) {
+      if (v.active !== false) {
+        vMap.set(v.id, {
+          month: m,
+          vendorId: v.id,
+          vendorName: v.name,
+          vatRegistered: Boolean(v.vatRegistered),
+          payoutMethod: v.payoutMethod || "stripe_connect",
+          stripeAccountId: v.stripeAccountId || null,
+          lines: [],
+          packLine: null,
+          packId: pack?.id || null,
+        });
+      }
+    }
+
+    if (pack?.lines) {
+      for (const pl of pack.lines) {
+        if (!vMap.has(pl.vendorId)) {
+          vMap.set(pl.vendorId, {
+            month: m,
+            vendorId: pl.vendorId,
+            vendorName: pl.vendorName,
+            vatRegistered: Boolean(pl.vatRegistered),
+            payoutMethod: pl.payoutMethod,
+            stripeAccountId: pl.stripeAccountId,
+            lines: [],
+            packLine: pl,
+            packId: pack.id,
+          });
+        } else {
+          vMap.get(pl.vendorId).packLine = pl;
+          vMap.get(pl.vendorId).packId = pack.id;
+        }
+      }
+    }
+
+    for (const l of mLines) {
+      if (!l.vendorId) continue;
+      if (!vMap.has(l.vendorId)) {
+        vMap.set(l.vendorId, {
+          month: m,
+          vendorId: l.vendorId,
+          vendorName: l.vendorName || "Vendor",
+          vatRegistered: Boolean(l.vatRegistered),
+          payoutMethod: "stripe_connect",
+          stripeAccountId: null,
+          lines: [l],
+          packLine: null,
+          packId: pack?.id || null,
+        });
+      } else {
+        vMap.get(l.vendorId).lines.push(l);
+      }
+    }
+
+    const activeInMonth = Array.from(vMap.values())
+      .filter((item) => item.lines.length > 0 || item.packLine != null)
+      .sort((a, b) => a.vendorName.localeCompare(b.vendorName));
+
+    for (const item of activeInMonth) {
+      const count = item.lines.length || item.packLine?.orderLineCount || 0;
+      const baseSales = item.lines.length > 0
+        ? item.lines.reduce((sum, l) => sum + Number(l.commissionBase), 0)
+        : (item.packLine ? Number(item.packLine.commissionBaseSum) : 0);
+      const commission = item.lines.length > 0
+        ? item.lines.reduce((sum, l) => sum + Number(l.commissionAmount), 0)
+        : (item.packLine ? Number(item.packLine.commissionSum) : 0);
+      const delivery = item.lines.length > 0
+        ? item.lines.reduce((sum, l) => sum + Number(l.deliveryAllowance), 0)
+        : (item.packLine ? Number(item.packLine.shippingSum) : 0);
+      const vat = item.lines.length > 0
+        ? item.lines.reduce((sum, l) => sum + Number(l.vendorVat), 0)
+        : 0;
+      const net = item.lines.length > 0
+        ? item.lines.reduce((sum, l) => sum + Number(l.vendorNet), 0)
+        : (item.packLine ? Number(item.packLine.vendorNetSum) : 0);
+      const status = item.packLine?.status || (item.lines.length > 0 && item.lines.every((l) => l.status === "qualified") ? "qualified" : "held");
+
+      allVendorRows.push({
+        ...item,
+        count,
+        baseSales,
+        commission,
+        delivery,
+        vat,
+        net,
+        status,
+      });
+    }
+  }
+
+  const filteredRows = allVendorRows.filter((r) => !vendorParam || r.vendorName.toLowerCase().includes(vendorParam));
+
+  const totalOrders = filteredRows.reduce((sum, r) => sum + r.count, 0);
+  const totalBase = filteredRows.reduce((sum, r) => sum + r.baseSales, 0);
+  const totalCommission = filteredRows.reduce((sum, r) => sum + r.commission, 0);
+  const totalDelivery = filteredRows.reduce((sum, r) => sum + r.delivery, 0);
+  const totalVat = filteredRows.reduce((sum, r) => sum + r.vat, 0);
+  const totalNet = filteredRows.reduce((sum, r) => sum + r.net, 0);
+  const vendorList = [...new Set(vendors.map((v) => v.name).filter(Boolean))].sort();
+
   app.innerHTML = shell(me, dash, health, `
     <div class="page-head">
       <div>
         <h1>Settlements</h1>
-        <p class="page-sub">One settlement for each month. Review it, approve it, then pay.</p>
+        <p class="page-sub">Vendor-wise monthly settlements and calculations. Review each vendor, approve, then pay.</p>
+      </div>
+      <div class="page-actions">
+        ${existingPack ? `
+          <a class="primary" href="#/settlements/${esc(existingPack.id)}">Open ${esc(monthLabel(selectedMonth))} Pack</a>
+        ` : selectedMonth !== "all" ? `
+          <button class="primary" id="btn-create-pack" type="button">Create ${esc(monthLabel(selectedMonth))} Settlement</button>
+        ` : ""}
       </div>
     </div>
-    <form id="gen">
-      ${monthSwitchHtml(month)}
-      <button class="primary" type="submit">${existing ? `Open ${esc(monthLabel(month))}` : `Create ${esc(monthLabel(month))}`}</button>
-    </form>
-    <p class="msg" id="msg"></p>
-    <section class="card">
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>Month</th><th>Status</th><th class="num">To pay</th><th class="num">Waiting</th><th class="num">Pay by Stripe</th><th class="num">Pay by bank</th><th>Pay on</th><th></th></tr></thead>
-          <tbody>
-            ${packs.map((pack) => `<tr>
-              <td><a class="rowlink" href="#/settlements/${esc(pack.id)}">${esc(monthLabel(pack.yearMonth))}</a></td>
-              <td>${badge(pack.status)}</td>
-              <td class="num">${aed(pack.payableTotal)}</td>
-              <td class="num">${aed(pack.heldTotal)}</td>
-              <td class="num">${aed(pack.connectPayableTotal || 0)}</td>
-              <td class="num">${aed(pack.manualPayableTotal || 0)}</td>
-              <td>${esc(payoutFor(pack.yearMonth).label)}</td>
-              <td><a href="#/settlements/${esc(pack.id)}">Open</a></td>
-            </tr>`).join("") || `<tr><td colspan="8"><div class="empty">No settlements yet. Create one for a month that already has orders.</div></td></tr>`}
-          </tbody>
-        </table>
+
+    <!-- Friendly explanation callout -->
+    <div class="simple-guide-box">
+      <h3>💰 Month - Vendor Settlement View</h3>
+      <p>
+        Every month, customer purchases are organized by vendor. Nirvan Earth keeps a 20% platform fee, and gives the rest (+ delivery and VAT) to each vendor.
+        Below is the exact arithmetic table for each vendor: <strong>Base Product − 20% Nirvan Fee + Delivery + VAT = Vendor Payout</strong>.
+      </p>
+    </div>
+
+    <nav class="tabs" aria-label="Settlement sections">
+      <a href="#/settlements?view=vendors&month=${encodeURIComponent(selectedMonth)}" aria-selected="${view === "vendors" ? "true" : "false"}">
+        Vendor-Wise Settlements (${filteredRows.length} vendors)
+      </a>
+      <a href="#/settlements?view=packs" aria-selected="${view === "packs" ? "true" : "false"}">
+        Monthly Settlement Packs (${packs.length})
+      </a>
+    </nav>
+
+    ${view === "packs" ? `
+      <section class="card">
+        <div class="card-head">Monthly Settlement Packs</div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Month</th><th>Status</th><th class="num">To pay</th><th class="num">Waiting</th><th class="num">Pay by Stripe</th><th class="num">Pay by bank</th><th>Pay on</th><th></th></tr></thead>
+            <tbody>
+              ${packs.map((pack) => `<tr>
+                <td><a class="rowlink" href="#/settlements/${esc(pack.id)}">${esc(monthLabel(pack.yearMonth))}</a></td>
+                <td>${badge(pack.status)}</td>
+                <td class="num">${aed(pack.payableTotal)}</td>
+                <td class="num">${aed(pack.heldTotal)}</td>
+                <td class="num">${aed(pack.connectPayableTotal || 0)}</td>
+                <td class="num">${aed(pack.manualPayableTotal || 0)}</td>
+                <td>${esc(payoutFor(pack.yearMonth).label)}</td>
+                <td><a href="#/settlements/${esc(pack.id)}">Open Pack →</a></td>
+              </tr>`).join("") || `<tr><td colspan="8"><div class="empty">No settlements yet. Create one for a month that already has orders.</div></td></tr>`}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    ` : `
+      <!-- Month Switcher with All Months option -->
+      <div class="month-switch">
+        <div class="month-picks" role="group" aria-label="Choose a month">
+          <button class="month-pick" type="button" data-settle-month="all" aria-pressed="${selectedMonth === "all" ? "true" : "false"}">All Months</button>
+          ${allMonths.map((m) => `
+            <button class="month-pick" type="button" data-settle-month="${esc(m)}" aria-pressed="${selectedMonth === m ? "true" : "false"}">
+              ${esc(shortMonth(m))}
+            </button>
+          `).join("")}
+        </div>
       </div>
-    </section>
+
+      <!-- Filters -->
+      <div class="filters" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:10px 14px;margin-bottom:16px;">
+        <input id="settle-filter" placeholder="Filter vendor name..." aria-label="Filter vendors" style="flex:1;min-width:200px;" />
+        <select id="settle-vendor-filter" aria-label="Filter by vendor" style="height:32px;border:0;border-radius:8px;background:var(--surface);box-shadow:inset 0 0 0 1px #8a8a8a;padding:0 10px;">
+          <option value="">All Vendors (${vendorList.length})</option>
+          ${vendorList.map((v) => `<option value="${esc(v)}" ${vendorParam === v.toLowerCase() ? "selected" : ""}>${esc(v)}</option>`).join("")}
+        </select>
+      </div>
+
+      <!-- Math Callout Banner -->
+      <div class="calc-callout">
+        <div>
+          <strong>💡 Formula: How Each Vendor Settlement is Calculated</strong>
+          <div class="calc-formula">
+            <span class="pill-math base">Base Product Price</span>
+            <span>−</span>
+            <span class="pill-math minus">20% Nirvan Fee</span>
+            <span>+</span>
+            <span class="pill-math plus">Delivery in Price</span>
+            <span>+</span>
+            <span class="pill-math plus">Vendor VAT</span>
+            <span>=</span>
+            <span class="pill-math equals">Vendor Net Payout</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Main Vendor Settlements Table -->
+      <section class="card">
+        <div class="card-head" style="display:flex;justify-content:space-between;align-items:center;">
+          <div>
+            <span>Vendor Settlement Table · ${selectedMonth === "all" ? "All Months" : esc(monthLabel(selectedMonth))}</span>
+            <span class="muted" style="display:block;font-size:12px;font-weight:normal;margin-top:2px;">
+              Direct vendor-by-vendor arithmetic. Click <strong>View Orders</strong> to see individual order receipts.
+            </span>
+          </div>
+          ${existingPack ? `<a class="ghost" href="#/settlements/${esc(existingPack.id)}">Open ${esc(monthLabel(selectedMonth))} Pack →</a>` : ""}
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                ${selectedMonth === "all" ? "<th>Month</th>" : ""}
+                <th>Vendor</th>
+                <th class="num">Orders</th>
+                <th class="num">Base Sales</th>
+                <th class="num">20% Nirvan Fee (-)</th>
+                <th class="num">Delivery in Price (+)</th>
+                <th class="num">Vendor VAT (+)</th>
+                <th class="num">Vendor Payout (=)</th>
+                <th>How Paid</th>
+                <th>Status</th>
+                <th>Orders</th>
+              </tr>
+            </thead>
+            <tbody id="settle-rows">
+              ${filteredRows.map((r) => `
+                <tr data-row-vendor="${esc(r.vendorName.toLowerCase())}">
+                  ${selectedMonth === "all" ? `<td><strong>${esc(shortMonth(r.month))}</strong></td>` : ""}
+                  <td class="wrap">
+                    <strong>${esc(r.vendorName)}</strong>
+                    <div style="margin-top:2px;">
+                      ${r.vatRegistered ? badge("vat") : `<span class="badge">No VAT</span>`}
+                    </div>
+                  </td>
+                  <td class="num"><strong>${r.count}</strong></td>
+                  <td class="num">${aed(r.baseSales)}</td>
+                  <td class="num" style="color:var(--critical)">- ${aed(r.commission)}</td>
+                  <td class="num" style="color:var(--info)">+ ${aed(r.delivery)}</td>
+                  <td class="num" style="color:var(--info)">+ ${aed(r.vat)}</td>
+                  <td class="num" style="font-weight:700;color:var(--success);font-size:14px;">= ${aed(r.net)}</td>
+                  <td>${badge(r.payoutMethod === "manual_bank" ? "manual_bank" : "stripe_connect")}</td>
+                  <td>${badge(r.status)}</td>
+                  <td>
+                    <div style="display:flex;align-items:center;gap:6px;">
+                      <button class="ghost" type="button" data-toggle-settle-orders="${esc(r.month + '-' + r.vendorId)}" data-count="${r.count}" aria-expanded="false" style="font-size:12px;">
+                        View Orders (${r.count}) ▾
+                      </button>
+                      ${r.packId ? `<a class="ghost" href="#/settlements/${esc(r.packId)}" style="font-size:12px;">Pack →</a>` : ""}
+                    </div>
+                  </td>
+                </tr>
+                <tr class="vendor-orders-row" data-settle-orders="${esc(r.month + '-' + r.vendorId)}" hidden>
+                  <td colspan="${selectedMonth === "all" ? "11" : "10"}">
+                    <div style="padding:6px 8px;">
+                      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                        <strong>Customer orders for ${esc(r.vendorName)} in ${esc(monthLabel(r.month))}:</strong>
+                        <a class="ghost" href="#/orders?vendor=${encodeURIComponent(r.vendorName)}&month=${encodeURIComponent(r.month)}" style="font-size:12px;">
+                          Open in Orders screen →
+                        </a>
+                      </div>
+                      ${r.lines.length > 0 ? `
+                        <table class="sub-table" style="margin-top:6px;">
+                          <thead>
+                            <tr>
+                              <th>Order #</th>
+                              <th>Item Title</th>
+                              <th>Paid Date</th>
+                              <th class="num">Base Price</th>
+                              <th class="num">20% Fee (-)</th>
+                              <th class="num">Delivery (+)</th>
+                              <th class="num">VAT (+)</th>
+                              <th class="num">Vendor Gets (=)</th>
+                              <th>Status</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            ${r.lines.map((ol) => `
+                              <tr>
+                                <td><strong>${esc(ol.orderNumber || ol.shopifyOrderId)}</strong></td>
+                                <td>${esc(ol.title)} ${ol.quantity > 1 ? `<span class="muted">× ${ol.quantity}</span>` : ""}</td>
+                                <td>${when(ol.paidAt)}</td>
+                                <td class="num">${aed(ol.commissionBase)}</td>
+                                <td class="num" style="color:var(--critical)">- ${aed(ol.commissionAmount)}</td>
+                                <td class="num" style="color:var(--info)">+ ${aed(ol.deliveryAllowance)}</td>
+                                <td class="num" style="color:var(--info)">+ ${aed(ol.vendorVat)}</td>
+                                <td class="num" style="font-weight:700;color:var(--success)">= ${aed(ol.vendorNet)}</td>
+                                <td>${badge(ol.status)}</td>
+                              </tr>
+                            `).join("")}
+                          </tbody>
+                        </table>
+                      ` : `<div class="empty" style="padding:10px;">Order line details are archived in the monthly pack.</div>`}
+                    </div>
+                  </td>
+                </tr>
+              `).join("") || `
+                <tr>
+                  <td colspan="${selectedMonth === "all" ? "11" : "10"}">
+                    <div class="empty">No vendor settlements found for this month or search.</div>
+                  </td>
+                </tr>
+              `}
+            </tbody>
+            ${filteredRows.length > 0 ? `
+              <tfoot>
+                <tr>
+                  <td colspan="${selectedMonth === "all" ? "2" : "1"}"><strong>TOTAL (${filteredRows.length} vendors)</strong></td>
+                  <td class="num"><strong>${totalOrders}</strong></td>
+                  <td class="num"><strong>${aed(totalBase)}</strong></td>
+                  <td class="num" style="color:var(--critical)"><strong>- ${aed(totalCommission)}</strong></td>
+                  <td class="num" style="color:var(--info)"><strong>+ ${aed(totalDelivery)}</strong></td>
+                  <td class="num" style="color:var(--info)"><strong>+ ${aed(totalVat)}</strong></td>
+                  <td class="num" style="color:var(--success);font-size:14px"><strong>= ${aed(totalNet)}</strong></td>
+                  <td colspan="3"></td>
+                </tr>
+              </tfoot>
+            ` : ""}
+          </table>
+        </div>
+      </section>
+    `}
   `);
   bindChrome();
-  const say = (error) => { app.querySelector("#msg").textContent = error?.message || error || ""; };
-  for (const button of app.querySelectorAll("[data-month]")) {
-    button.addEventListener("click", () => goMonth(`#/settlements?month=${encodeURIComponent(button.dataset.month)}`));
+
+  for (const button of app.querySelectorAll("[data-settle-month]")) {
+    button.addEventListener("click", () => {
+      const m = button.dataset.settleMonth;
+      location.hash = `#/settlements?view=vendors&month=${encodeURIComponent(m)}`;
+    });
   }
-  app.querySelector("#gen").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    if (existing) {
-      location.hash = `#/settlements/${existing.id}`;
-      return;
+
+  const applySettleFilter = () => {
+    const textQuery = (app.querySelector("#settle-filter")?.value || "").trim().toLowerCase();
+    const vSelect = (app.querySelector("#settle-vendor-filter")?.value || "").trim().toLowerCase();
+    for (const row of app.querySelectorAll("#settle-rows tr[data-row-vendor]")) {
+      const vName = row.dataset.rowVendor || "";
+      const matches = (!vSelect || vName === vSelect) && (!textQuery || vName.includes(textQuery));
+      row.hidden = !matches;
     }
+  };
+  app.querySelector("#settle-filter")?.addEventListener("input", applySettleFilter);
+  app.querySelector("#settle-vendor-filter")?.addEventListener("change", (e) => {
+    const val = e.target.value;
+    location.hash = `#/settlements?view=vendors&month=${encodeURIComponent(selectedMonth)}${val ? `&vendor=${encodeURIComponent(val)}` : ""}`;
+  });
+
+  for (const button of app.querySelectorAll("[data-toggle-settle-orders]")) {
+    button.addEventListener("click", () => {
+      const key = button.dataset.toggleSettleOrders;
+      const row = app.querySelector(`tr[data-settle-orders="${key}"]`);
+      if (row) {
+        const isHidden = row.hidden;
+        row.hidden = !isHidden;
+        button.setAttribute("aria-expanded", isHidden ? "true" : "false");
+        button.textContent = isHidden ? `Hide Orders (${button.dataset.count}) ▴` : `View Orders (${button.dataset.count}) ▾`;
+      }
+    });
+  }
+
+  app.querySelector("#btn-create-pack")?.addEventListener("click", async () => {
     try {
       const result = await api("/api/packs/generate", {
         method: "POST",
-        body: { yearMonth: month },
+        body: { yearMonth: selectedMonth },
       });
       location.hash = `#/settlements/${result.pack.id}`;
       await render();
     } catch (error) {
-      say(error);
+      alert(error.message || "Could not generate pack.");
     }
   });
 }
