@@ -117,7 +117,7 @@ export function presentPack(pack: {
     if (!line.vendor.vatRegistered) return 0;
     if (line.orderLines && line.orderLines.length > 0) {
       const sum = line.orderLines.reduce((s, o) => s + (o.vendorVat != null ? money(o.vendorVat) : 0), 0);
-      return Math.round(sum * 100) / 100;
+      if (sum > 0) return Math.round(sum * 100) / 100;
     }
     const implied = money(line.vendorNetSum) - (money(line.commissionBaseSum) - money(line.commissionSum) + money(line.shippingSum));
     return implied > 0 ? Math.round(implied * 100) / 100 : 0;

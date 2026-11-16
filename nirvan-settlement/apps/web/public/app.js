@@ -3,6 +3,7 @@ let flash = "";
 
 const money = new Intl.NumberFormat("en-AE", { style: "currency", currency: "AED" });
 const aed = (value) => money.format(Number(value || 0));
+const round2 = (value) => Math.round((Number(value) || 0) * 100) / 100;
 
 const ICONS = {
   home: '<svg width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M3 9.2 10 3l7 6.2V17a1 1 0 0 1-1 1h-4.2v-4.6H8.2V18H4a1 1 0 0 1-1-1V9.2Z" stroke="currentColor" stroke-width="1.4"/></svg>',
@@ -559,20 +560,23 @@ async function renderHome(me) {
   const vendorRows = activeVendorSummaries.map((item) => {
     const count = item.lines.length || item.packLine?.orderLineCount || 0;
     const baseSales = item.lines.length > 0
-      ? item.lines.reduce((sum, l) => sum + Number(l.commissionBase), 0)
-      : (item.packLine ? Number(item.packLine.commissionBaseSum) : 0);
+      ? item.lines.reduce((sum, l) => sum + Number(l.commissionBase || 0), 0)
+      : (item.packLine ? Number(item.packLine.commissionBaseSum || 0) : 0);
     const commission = item.lines.length > 0
-      ? item.lines.reduce((sum, l) => sum + Number(l.commissionAmount), 0)
-      : (item.packLine ? Number(item.packLine.commissionSum) : 0);
+      ? item.lines.reduce((sum, l) => sum + Number(l.commissionAmount || 0), 0)
+      : (item.packLine ? Number(item.packLine.commissionSum || 0) : 0);
     const delivery = item.lines.length > 0
-      ? item.lines.reduce((sum, l) => sum + Number(l.deliveryAllowance), 0)
-      : (item.packLine ? Number(item.packLine.shippingSum) : 0);
-    const vat = item.lines.length > 0
-      ? item.lines.reduce((sum, l) => sum + Number(l.vendorVat), 0)
-      : 0;
+      ? item.lines.reduce((sum, l) => sum + Number(l.deliveryAllowance || 0), 0)
+      : (item.packLine ? Number(item.packLine.shippingSum || 0) : 0);
     const net = item.lines.length > 0
-      ? item.lines.reduce((sum, l) => sum + Number(l.vendorNet), 0)
-      : (item.packLine ? Number(item.packLine.vendorNetSum) : 0);
+      ? item.lines.reduce((sum, l) => sum + Number(l.vendorNet || 0), 0)
+      : (item.packLine ? Number(item.packLine.vendorNetSum || 0) : 0);
+
+    const rawVat = item.lines.length > 0
+      ? item.lines.reduce((sum, l) => sum + Number(l.vendorVat || 0), 0)
+      : (item.packLine ? Number(item.packLine.vendorVatSum || 0) : 0);
+    const impliedVat = round2(net - (baseSales - commission + delivery));
+    const vat = rawVat > 0 ? rawVat : (impliedVat > 0 && (item.vatRegistered || item.packLine?.vatRegistered) ? impliedVat : 0);
     const grossSold = item.lines.length > 0
       ? item.lines.reduce((sum, l) => sum + (Number(l.gross) - Number(l.discount)), 0)
       : (baseSales + delivery + vat);
@@ -734,19 +738,28 @@ async function renderHome(me) {
                           </tr>
                         </thead>
                         <tbody>
-                          ${r.lines.map((ol) => `
-                            <tr>
-                              <td><strong>${esc(ol.orderNumber || ol.shopifyOrderId)}</strong></td>
-                              <td>${esc(ol.title)} ${ol.quantity > 1 ? `<span class="muted">× ${ol.quantity}</span>` : ""}</td>
-                              <td>${when(ol.paidAt)}</td>
-                              <td class="num">${aed(ol.commissionBase)}</td>
-                              <td class="num" style="color:var(--critical)">- ${aed(ol.commissionAmount)}</td>
-                              <td class="num" style="color:var(--info)">+ ${aed(ol.deliveryAllowance)}</td>
-                              <td class="num" style="color:var(--info)">+ ${aed(ol.vendorVat)}</td>
-                              <td class="num" style="font-weight:700;color:var(--success)">= ${aed(ol.vendorNet)}</td>
-                              <td>${badge(ol.status)}</td>
-                            </tr>
-                          `).join("")}
+                          ${r.lines.map((ol) => {
+                            const olBase = Number(ol.commissionBase || 0);
+                            const olComm = Number(ol.commissionAmount || 0);
+                            const olDeliv = Number(ol.deliveryAllowance || 0);
+                            const olNet = Number(ol.vendorNet || 0);
+                            const rawOlVat = Number(ol.vendorVat || 0);
+                            const impliedOlVat = round2(olNet - (olBase - olComm + olDeliv));
+                            const olVat = rawOlVat > 0 ? rawOlVat : (impliedOlVat > 0 && (ol.vatRegistered || r.vatRegistered) ? impliedOlVat : 0);
+                            return `
+                              <tr>
+                                <td><strong>${esc(ol.orderNumber || ol.shopifyOrderId)}</strong></td>
+                                <td>${esc(ol.title)} ${ol.quantity > 1 ? `<span class="muted">× ${ol.quantity}</span>` : ""}</td>
+                                <td>${when(ol.paidAt)}</td>
+                                <td class="num">${aed(olBase)}</td>
+                                <td class="num" style="color:var(--critical)">- ${aed(olComm)}</td>
+                                <td class="num" style="color:var(--info)">+ ${aed(olDeliv)}</td>
+                                <td class="num" style="color:var(--info)">+ ${aed(olVat)}</td>
+                                <td class="num" style="font-weight:700;color:var(--success)">= ${aed(olNet)}</td>
+                                <td>${badge(ol.status)}</td>
+                              </tr>
+                            `;
+                          }).join("")}
                         </tbody>
                       </table>
                     ` : `<div class="empty">Order line details are archived in the settlement pack.</div>`}
@@ -916,20 +929,23 @@ async function renderSettlements(me) {
     for (const item of activeInMonth) {
       const count = item.lines.length || item.packLine?.orderLineCount || 0;
       const baseSales = item.lines.length > 0
-        ? item.lines.reduce((sum, l) => sum + Number(l.commissionBase), 0)
-        : (item.packLine ? Number(item.packLine.commissionBaseSum) : 0);
+        ? item.lines.reduce((sum, l) => sum + Number(l.commissionBase || 0), 0)
+        : (item.packLine ? Number(item.packLine.commissionBaseSum || 0) : 0);
       const commission = item.lines.length > 0
-        ? item.lines.reduce((sum, l) => sum + Number(l.commissionAmount), 0)
-        : (item.packLine ? Number(item.packLine.commissionSum) : 0);
+        ? item.lines.reduce((sum, l) => sum + Number(l.commissionAmount || 0), 0)
+        : (item.packLine ? Number(item.packLine.commissionSum || 0) : 0);
       const delivery = item.lines.length > 0
-        ? item.lines.reduce((sum, l) => sum + Number(l.deliveryAllowance), 0)
-        : (item.packLine ? Number(item.packLine.shippingSum) : 0);
-      const vat = item.lines.length > 0
-        ? item.lines.reduce((sum, l) => sum + Number(l.vendorVat), 0)
-        : 0;
+        ? item.lines.reduce((sum, l) => sum + Number(l.deliveryAllowance || 0), 0)
+        : (item.packLine ? Number(item.packLine.shippingSum || 0) : 0);
       const net = item.lines.length > 0
-        ? item.lines.reduce((sum, l) => sum + Number(l.vendorNet), 0)
-        : (item.packLine ? Number(item.packLine.vendorNetSum) : 0);
+        ? item.lines.reduce((sum, l) => sum + Number(l.vendorNet || 0), 0)
+        : (item.packLine ? Number(item.packLine.vendorNetSum || 0) : 0);
+
+      const rawVat = item.lines.length > 0
+        ? item.lines.reduce((sum, l) => sum + Number(l.vendorVat || 0), 0)
+        : (item.packLine ? Number(item.packLine.vendorVatSum || 0) : 0);
+      const impliedVat = round2(net - (baseSales - commission + delivery));
+      const vat = rawVat > 0 ? rawVat : (impliedVat > 0 && (item.vatRegistered || item.packLine?.vatRegistered) ? impliedVat : 0);
       const status = item.packLine?.status || (item.lines.length > 0 && item.lines.every((l) => l.status === "qualified") ? "qualified" : "held");
 
       allVendorRows.push({
@@ -1129,19 +1145,28 @@ async function renderSettlements(me) {
                             </tr>
                           </thead>
                           <tbody>
-                            ${r.lines.map((ol) => `
-                              <tr>
-                                <td><strong>${esc(ol.orderNumber || ol.shopifyOrderId)}</strong></td>
-                                <td>${esc(ol.title)} ${ol.quantity > 1 ? `<span class="muted">× ${ol.quantity}</span>` : ""}</td>
-                                <td>${when(ol.paidAt)}</td>
-                                <td class="num">${aed(ol.commissionBase)}</td>
-                                <td class="num" style="color:var(--critical)">- ${aed(ol.commissionAmount)}</td>
-                                <td class="num" style="color:var(--info)">+ ${aed(ol.deliveryAllowance)}</td>
-                                <td class="num" style="color:var(--info)">+ ${aed(ol.vendorVat)}</td>
-                                <td class="num" style="font-weight:700;color:var(--success)">= ${aed(ol.vendorNet)}</td>
-                                <td>${badge(ol.status)}</td>
-                              </tr>
-                            `).join("")}
+                            ${r.lines.map((ol) => {
+                              const olBase = Number(ol.commissionBase || 0);
+                              const olComm = Number(ol.commissionAmount || 0);
+                              const olDeliv = Number(ol.deliveryAllowance || 0);
+                              const olNet = Number(ol.vendorNet || 0);
+                              const rawOlVat = Number(ol.vendorVat || 0);
+                              const impliedOlVat = round2(olNet - (olBase - olComm + olDeliv));
+                              const olVat = rawOlVat > 0 ? rawOlVat : (impliedOlVat > 0 && (ol.vatRegistered || r.vatRegistered) ? impliedOlVat : 0);
+                              return `
+                                <tr>
+                                  <td><strong>${esc(ol.orderNumber || ol.shopifyOrderId)}</strong></td>
+                                  <td>${esc(ol.title)} ${ol.quantity > 1 ? `<span class="muted">× ${ol.quantity}</span>` : ""}</td>
+                                  <td>${when(ol.paidAt)}</td>
+                                  <td class="num">${aed(olBase)}</td>
+                                  <td class="num" style="color:var(--critical)">- ${aed(olComm)}</td>
+                                  <td class="num" style="color:var(--info)">+ ${aed(olDeliv)}</td>
+                                  <td class="num" style="color:var(--info)">+ ${aed(olVat)}</td>
+                                  <td class="num" style="font-weight:700;color:var(--success)">= ${aed(olNet)}</td>
+                                  <td>${badge(ol.status)}</td>
+                                </tr>
+                              `;
+                            }).join("")}
                           </tbody>
                         </table>
                       ` : `<div class="empty" style="padding:10px;">Order line details are archived in the monthly pack.</div>`}
@@ -1228,12 +1253,22 @@ async function renderSettlements(me) {
 
 function payRows(lines, payoutsEnabled) {
   if (!lines.length) return `<div class="empty">Nobody in this list.</div>`;
-  const totOrders = lines.reduce((s, l) => s + l.orderLineCount, 0);
-  const totBase = lines.reduce((s, l) => s + l.commissionBaseSum, 0);
-  const totComm = lines.reduce((s, l) => s + l.commissionSum, 0);
-  const totDeliv = lines.reduce((s, l) => s + l.shippingSum, 0);
-  const totVat = lines.reduce((s, l) => s + (l.vendorVatSum || 0), 0);
-  const totNet = lines.reduce((s, l) => s + (l.ruleNetSum ?? l.vendorNetSum), 0);
+  const lineRows = lines.map((line) => {
+    const base = Number(line.commissionBaseSum || 0);
+    const comm = Number(line.commissionSum || 0);
+    const deliv = Number(line.shippingSum || 0);
+    const net = Number(line.ruleNetSum ?? line.vendorNetSum ?? 0);
+    const rawVat = Number(line.vendorVatSum || 0);
+    const impliedVat = round2(net - (base - comm + deliv));
+    const vat = rawVat > 0 ? rawVat : (impliedVat > 0 && line.vatRegistered ? impliedVat : 0);
+    return { ...line, base, comm, deliv, net, vat };
+  });
+  const totOrders = lineRows.reduce((s, l) => s + l.orderLineCount, 0);
+  const totBase = lineRows.reduce((s, l) => s + l.base, 0);
+  const totComm = lineRows.reduce((s, l) => s + l.comm, 0);
+  const totDeliv = lineRows.reduce((s, l) => s + l.deliv, 0);
+  const totVat = lineRows.reduce((s, l) => s + l.vat, 0);
+  const totNet = lineRows.reduce((s, l) => s + l.net, 0);
   return `
     <div class="table-wrap">
       <table>
@@ -1252,7 +1287,7 @@ function payRows(lines, payoutsEnabled) {
           </tr>
         </thead>
         <tbody>
-          ${lines.map((line) => `
+          ${lineRows.map((line) => `
             <tr>
               <td class="wrap">
                 <strong>${esc(line.vendorName)}</strong>
@@ -1264,11 +1299,11 @@ function payRows(lines, payoutsEnabled) {
                 ${line.stripeAccountId ? `<div class="muted">Account ${esc(line.stripeAccountId)}</div>` : ""}
               </td>
               <td class="num"><strong>${line.orderLineCount}</strong></td>
-              <td class="num">${aed(line.commissionBaseSum)}</td>
-              <td class="num" style="color:var(--critical)">- ${aed(line.commissionSum)}</td>
-              <td class="num" style="color:var(--info)">+ ${aed(line.shippingSum)}</td>
-              <td class="num" style="color:var(--info)">+ ${aed(line.vendorVatSum || 0)}</td>
-              <td class="num" style="font-weight:700;color:var(--success);font-size:14px;">= ${aed(line.ruleNetSum ?? line.vendorNetSum)}${line.ruleNetSum != null && Math.abs(line.ruleNetSum - line.vendorNetSum) > 0.001 ? `<div class="muted" style="font-weight:normal;font-size:11px;">Already paid ${aed(line.vendorNetSum)}</div>` : ""}</td>
+              <td class="num">${aed(line.base)}</td>
+              <td class="num" style="color:var(--critical)">- ${aed(line.comm)}</td>
+              <td class="num" style="color:var(--info)">+ ${aed(line.deliv)}</td>
+              <td class="num" style="color:var(--info)">+ ${aed(line.vat)}</td>
+              <td class="num" style="font-weight:700;color:var(--success);font-size:14px;">= ${aed(line.net)}${line.ruleNetSum != null && Math.abs(line.ruleNetSum - line.vendorNetSum) > 0.001 ? `<div class="muted" style="font-weight:normal;font-size:11px;">Already paid ${aed(line.vendorNetSum)}</div>` : ""}</td>
               <td>${badge(line.status)}</td>
               <td class="wrap">
                 ${line.invoiceNumber ? `<div><a href="/api/lines/${esc(line.id)}/invoice">Download payment advice</a></div>` : ""}
@@ -1432,10 +1467,12 @@ function orderPairs(lines) {
     const search = `${line.orderNumber || ""} ${line.shopifyOrderId} ${line.title} ${line.vendorName || ""}`.toLowerCase();
     const flags = orderFlags(line);
     const deliveryAllowance = Number(line.deliveryAllowance || 0);
-    const vendorVat = Number(line.vendorVat || 0);
     const commissionAmount = Number(line.commissionAmount || 0);
     const commissionBase = Number(line.commissionBase || 0);
     const vendorNet = Number(line.vendorNet || 0);
+    const rawVat = Number(line.vendorVat || 0);
+    const impliedVat = round2(vendorNet - (commissionBase - commissionAmount + deliveryAllowance));
+    const vendorVat = rawVat > 0 ? rawVat : (impliedVat > 0 && line.vatRegistered ? impliedVat : 0);
 
     return `
       <tr data-line="${esc(line.id)}" data-payable="${flags.payable}" data-held="${flags.held}" data-own="${flags.own}" data-month="${esc(dubaiMonth(line.paidAt))}" data-vendor="${esc(line.isPlatformOwn ? "Nirvan Earth" : (line.vendorName || ""))}" data-search="${esc(search)}">
