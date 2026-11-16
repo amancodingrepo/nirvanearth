@@ -239,38 +239,38 @@ function shell(me, dash, health, body) {
   const item = (href, key, label, icon) =>
     `<a href="${href}" ${current === key ? 'aria-current="page"' : ""}>${ICONS[icon]}<span>${label}</span></a>`;
   const titles = {
-    home: "📊 Dashboard & Monthly Calculations",
-    orders: "📦 Customer Orders",
-    vendors: "🏪 Partner Vendors",
-    settlements: "💰 Monthly Settlements",
-    owner: "🎁 Nirvan Products & Hampers",
-    rules: "⚙️ Marketplace Rules",
-    activity: "📜 Activity Log",
-    system: "🔌 System Health",
+    home: "Home",
+    orders: "Orders",
+    vendors: "Vendors",
+    settlements: "Settlements",
+    owner: "Own sales",
+    rules: "Rules",
+    activity: "Activity",
+    system: "System",
   };
   return `
     <div class="admin">
       <aside class="nav">
         <div class="shop">
           <div class="mark">NE</div>
-          <div><strong>Nirvan Earth</strong><span>Settlements Admin</span></div>
+          <div><strong>Nirvan Earth</strong><span>Settlements</span></div>
         </div>
-        ${item("#/", "home", "Dashboard", "home")}
+        ${item("#/", "home", "Home", "home")}
         ${item("#/orders", "orders", "Orders", "orders")}
         ${item("#/vendors", "vendors", "Vendors", "vendors")}
         ${item("#/settlements", "settlements", "Settlements", "settlements")}
-        ${item("#/owner", "owner", "Own Hampers", "owner")}
+        ${item("#/owner", "owner", "Own sales", "owner")}
         ${item("#/rules", "rules", "Rules", "rules")}
-        ${item("#/activity", "activity", "Activity Log", "activity")}
-        ${item("#/system", "system", "System Health", "system")}
+        ${item("#/activity", "activity", "Activity", "activity")}
+        ${item("#/system", "system", "System", "system")}
         <div class="spacer"></div>
         <button class="link" id="logout" type="button">Sign out</button>
       </aside>
       <div class="frame">
         <header class="topbar">
-          <div class="crumb"><strong>${esc(titles[current] || "Dashboard")}</strong></div>
+          <div class="crumb"><strong>${esc(titles[current] || "Home")}</strong></div>
           <div class="top-meta">
-            <span class="user-pill">👤 ${esc(me.email)} ${me.approver ? "· Approver" : ""}</span>
+            <span>${esc(me.email)}</span>
           </div>
         </header>
         ${testBanner(dash, health)}
