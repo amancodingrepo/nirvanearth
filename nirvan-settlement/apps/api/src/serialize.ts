@@ -102,10 +102,14 @@ export function presentPack(pack: {
   const methodOf = (line: { payoutMethod?: string }) => (line.payoutMethod === "manual_bank" ? "manual_bank" : "stripe_connect");
   const connectPayable = payable.filter((line) => methodOf(line) === "stripe_connect");
   const manualPayable = payable.filter((line) => methodOf(line) === "manual_bank");
-  const ruleNet = (line: { vendorNetSum: Decimalish; orderLines?: Array<{ vendorNet: Decimalish }> }) =>
-    line.orderLines && line.orderLines.length > 0
+  const ruleNet = (line: { status?: string; stripeTransferId?: string | null; vendorNetSum: Decimalish; orderLines?: Array<{ vendorNet: Decimalish }> }) => {
+    if (line.status === "transferred" || line.status === "manual_paid" || Boolean(line.stripeTransferId)) {
+      return money(line.vendorNetSum);
+    }
+    return line.orderLines && line.orderLines.length > 0
       ? line.orderLines.reduce((sum, item) => sum + money(item.vendorNet), 0)
       : money(line.vendorNetSum);
+  };
   const lineVat = (line: {
     vendorNetSum: Decimalish;
     commissionBaseSum: Decimalish;

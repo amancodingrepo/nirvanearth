@@ -625,7 +625,7 @@ async function renderHome(me) {
     <div class="metrics">
       <div class="metric">
         <div class="label">Total Owed to Vendors</div>
-        <div class="value">${pack ? aed(pack.rulePayableTotal ?? pack.payableTotal) : aed(totalNet)}</div>
+        <div class="value">${pack ? aed(pack.payableTotal) : aed(totalNet)}</div>
         <div class="subvalue">Net payout to partner sellers</div>
       </div>
       <div class="metric">
@@ -1257,7 +1257,7 @@ function payRows(lines, payoutsEnabled) {
     const base = Number(line.commissionBaseSum || 0);
     const comm = Number(line.commissionSum || 0);
     const deliv = Number(line.shippingSum || 0);
-    const net = Number(line.ruleNetSum ?? line.vendorNetSum ?? 0);
+    const net = Number(line.vendorNetSum || 0);
     const rawVat = Number(line.vendorVatSum || 0);
     const impliedVat = round2(net - (base - comm + deliv));
     const vat = rawVat > 0 ? rawVat : (impliedVat > 0 && line.vatRegistered ? impliedVat : 0);
@@ -1303,7 +1303,7 @@ function payRows(lines, payoutsEnabled) {
               <td class="num" style="color:var(--critical)">- ${aed(line.comm)}</td>
               <td class="num" style="color:var(--info)">+ ${aed(line.deliv)}</td>
               <td class="num" style="color:var(--info)">+ ${aed(line.vat)}</td>
-              <td class="num" style="font-weight:700;color:var(--success);font-size:14px;">= ${aed(line.net)}${line.ruleNetSum != null && Math.abs(line.ruleNetSum - line.vendorNetSum) > 0.001 ? `<div class="muted" style="font-weight:normal;font-size:11px;">Already paid ${aed(line.vendorNetSum)}</div>` : ""}</td>
+              <td class="num" style="font-weight:700;color:var(--success);font-size:14px;">= ${aed(line.net)}</td>
               <td>${badge(line.status)}</td>
               <td class="wrap">
                 ${line.invoiceNumber ? `<div><a href="/api/lines/${esc(line.id)}/invoice">Download payment advice</a></div>` : ""}
@@ -1388,7 +1388,7 @@ async function renderPack(me) {
     </div>
 
     <div class="metrics">
-      <div class="metric"><div class="label">To pay vendors</div><div class="value">${aed(pack.rulePayableTotal ?? pack.payableTotal)}</div>${Math.abs((pack.rulePayableTotal ?? pack.payableTotal) - pack.payableTotal) > 0.001 ? `<div class="muted">Already paid ${aed(pack.payableTotal)}</div>` : ""}</div>
+      <div class="metric"><div class="label">To pay vendors</div><div class="value">${aed(pack.payableTotal)}</div></div>
       <div class="metric"><div class="label">Nirvan 20% Fee</div><div class="value">${aed(pack.commissionTotal || 0)}</div></div>
       <div class="metric"><div class="label">Vendor VAT Included</div><div class="value">${aed(pack.vatTotal || 0)}</div></div>
       <div class="metric"><div class="label">Waiting</div><div class="value">${aed(pack.heldTotal)}</div></div>
